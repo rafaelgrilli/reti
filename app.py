@@ -4,88 +4,96 @@ import numpy as np
 import plotly.graph_objects as go
 
 # Configuração da Página
-st.set_page_config(page_title="Impacto Fiscal Consolidado RETI", layout="wide")
+st.set_page_config(page_title="Simulador Macro RETI", layout="wide")
 
-st.title("🏛️ Análise de Impacto Fiscal Consolidado (10 Anos)")
+st.title("🏛️ Simulador de Impacto Fiscal: Nacional & Consolidado")
 st.markdown("""
-Esta simulação apresenta o **impacto acumulado para a União**, comparando o gasto tributário atual da 
-**Lei do Bem** com a proposta do **RETI**, considerando o universo de empresas brasileiras.
+Esta ferramenta modela o impacto do **RETI** em escala nacional, comparando-o com o custo histórico da **Lei do Bem**.
+Os cálculos agora refletem valores em **Bilhões de Reais (R$ Bi)** para o orçamento da União.
 """)
 
-# --- SIDEBAR: CONFIGURAÇÃO DE ESCALA NACIONAL ---
-st.sidebar.header("📊 Escala do Ecossistema")
+# --- SIDEBAR: TODOS OS PARÂMETROS REINTEGRADOS ---
+st.sidebar.header("⚙️ Parâmetros do Modelo")
 
-universo_empresas = st.sidebar.number_input(
-    "Número de Empresas (Universo Alvo)", 
-    value=5000, 
-    step=100,
-    help="Estimativa de quantas empresas (Startups + Deep Techs + Maduras) utilizarão o regime no Brasil."
-)
+with st.sidebar.expander("1. Escala do Ecossistema", expanded=True):
+    universo_empresas = st.number_input("Nº de Empresas Alvo", value=5000, step=100, help="Total de empresas que utilizariam o regime no Brasil.")
+    base_rd_nacional = st.number_input("Investimento Médio P&D (R$)", value=800000.0, step=50000.0, help="Gasto médio anual em inovação por empresa.")
 
-# --- PREMISSAS DETALHADAS ---
-with st.sidebar.expander("Calibragem Lei do Bem (Histórico Real)", expanded=True):
-    renuncia_media_anual_por_cnpj = st.number_input(
-        "Renúncia Média Anual Lei do Bem (por CNPJ - R$)", 
-        value=1200000.0, 
-        step=50000.0,
-        help="Baseado no histórico do MCTI, cada empresa no Lucro Real economiza em média este valor em impostos."
-    )
+with st.sidebar.expander("2. Configurações RETI (A fórmula)", expanded=True):
+    fator_f = st.select_slider("Fator F Médio", options=[1.0, 2.0, 2.5, 3.0, 3.5], value=2.5, help="Maturidade média das empresas (3.5 = startups, 1.0 = maduras).")
+    multiplicador = st.slider("Multiplicador P&D (Fórmula)", 1.0, 2.5, 1.6, help="O '1.6' da fórmula original. Define a agressividade da superdedução.")
+    trava_uso = st.slider("Trava de Uso do Crédito (%)", 10, 100, 50, help="Limite de abatimento do imposto devido em cada ano.") / 100
 
-with st.sidebar.expander("Parâmetros do Modelo RETI", expanded=True):
-    fator_f_medio = st.slider("Fator F Médio do Ecossistema", 1.0, 3.5, 2.5,
-                              help="Média do Fator F ponderada entre Startups (3.5) e Empresas Maduras (1.0).")
-    tax_rate = 0.34  # IRPJ (25%) + CSLL (9%)
-    lambda_pib = st.sidebar.slider("Coeficiente de Produtividade (λ)", 0.01, 0.20, 0.08,
-                                   help="Retorno indireto na arrecadação via crescimento do PIB setorial.")
+with st.sidebar.expander("3. Premissas de Resposta & Macro", expanded=True):
+    elasticity = st.slider("Elasticidade P&D", -2.0, -0.1, -1.2, help="Quanto o investimento aumenta quando o custo tributário cai.")
+    lambda_prod = st.slider("Coeficiente λ (Produtividade)", 0.01, 0.30, 0.08, help="Impacto de cada real de P&D no retorno de arrecadação indireta.")
+    tax_rate = st.sidebar.number_input("Alíquota IRPJ/CSLL", 0.0, 0.40, 0.34)
+    ipca = st.sidebar.slider("Correção IPCA Anual", 0.0, 0.15, 0.045)
 
-# --- LÓGICA DE CÁLCULO MACRO ---
+# --- LÓGICA DE SIMULAÇÃO MACRO ---
 anos = list(range(1, 11))
-dados_macro = []
+dados_simulados = []
 
-# Loop de Simulação Temporal
+# Estados iniciais para acúmulo
+credito_acumulado_bi = 0.0
+
 for t in anos:
-    # 1. LEI DO BEM (Projeção Baseada em Dados Reais)
-    # Valor total anual em Bilhões = (Média por CNPJ * Total Empresas * Inflação/Crescimento) / 1 Bilhão
-    total_renuncia_bem_ano = (renuncia_media_anual_por_cnpj * universo_empresas * (1.045 ** t)) / 1e9
+    # --- LEI DO BEM (Baseline) ---
+    # Histórico: Exclusão de 60% do P&D da base de cálculo
+    renuncia_bem_ano = (base_rd_nacional * 0.60 * tax_rate * universo_empresas * (1.045**t)) / 1e9
     
-    # 2. RETI (Proposta Nova)
-    # Considera investimento médio em P&D nacional por empresa
-    investimento_pd_nacional_medio = 600000.0 * (1.10 ** t) # Cresce 10% ao ano
+    # --- RETI (Cálculo Dinâmico) ---
+    # 1. Efeito Indução: O custo cai, o investimento sobe
+    custo_marginal_reducao = (multiplicador * fator_f * tax_rate)
+    rd_induzido_unitario = base_rd_nacional * (1 + abs(elasticity) * (custo_marginal_reducao))
     
-    # Impacto RETI em Bilhões = (P&D * Superdedução 1.6 * Fator F * Alíquota * Empresas) / 1 Bilhão
-    total_renuncia_reti_ano = (investimento_pd_nacional_medio * 1.6 * fator_f_medio * tax_rate * universo_empresas) / 1e9
+    # 2. Renúncia Bruta (Antes da Trava)
+    # Base Tributável Presumida (32% da Receita) - assumindo receita média 4x o P&D
+    receita_media = rd_induzido_unitario * 4
+    base_presumida = receita_media * 0.32
+    deducao_reti = multiplicador * rd_induzido_unitario * fator_f
     
-    # 3. RETORNO FISCAL (Efeito multiplicador)
-    ganho_arrecadacao_indireta = (investimento_pd_nacional_medio * universo_empresas * lambda_pib * tax_rate) / 1e9
+    imposto_antes_reti = base_presumida * tax_rate
+    imposto_apos_reti = max(0.0, base_presumida - deducao_reti) * tax_rate
+    
+    renuncia_direta_ano = (imposto_antes_reti - imposto_apos_reti) * universo_empresas / 1e9
+    
+    # 3. Gestão de Crédito (Estoque e Trava)
+    novo_credito_gerado = (rd_induzido_unitario * tax_rate * universo_empresas) / 1e9
+    credito_usavel = min(credito_acumulado_bi, (imposto_apos_reti * universo_empresas / 1e9) * trava_uso)
+    
+    credito_acumulado_bi = (credito_acumulado_bi * (1 + ipca)) + novo_credito_gerado - credito_usavel
+    
+    renuncia_total_reti = renuncia_direta_ano + credito_usavel
+    
+    # 4. Retorno Fiscal (Ganho de PIB)
+    retorno_indireto = (rd_induzido_unitario * universo_empresas * lambda_prod * tax_rate) / 1e9
 
-    dados_macro.append({
+    dados_simulados.append({
         "Ano": t,
-        "Renúncia Lei do Bem (Bi R$)": total_renuncia_bem_ano,
-        "Renúncia RETI (Bi R$)": total_renuncia_reti_ano,
-        "Arrecadação Indireta (Bi R$)": ganho_arrecadacao_indireta
+        "Lei do Bem (Bi)": renuncia_bem_ano,
+        "RETI (Bi)": renuncia_total_reti,
+        "Estoque Crédito (Bi)": credito_acumulado_bi,
+        "Retorno Indireto (Bi)": retorno_indireto,
+        "P&D Nacional (Bi)": (rd_induzido_unitario * universo_empresas) / 1e9
     })
 
-df_macro = pd.DataFrame(dados_macro)
+df = pd.DataFrame(dados_simulados)
 
-# --- DASHBOARD EXECUTIVO ---
-col1, col2, col3 = st.columns(3)
+# --- OUTPUTS ---
+st.header("📊 Comparativo Consolidado: 10 Anos")
 
-total_bem_10a = df_macro["Renúncia Lei do Bem (Bi R$)"].sum()
-total_reti_10a = df_macro["Renúncia RETI (Bi R$)"].sum()
-total_ret_10a = df_macro["Arrecadação Indireta (Bi R$)"].sum()
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Custo Total Bem", f"R$ {df['Lei do Bem (Bi)'].sum():,.1f} Bi")
+c2.metric("Custo Total RETI", f"R$ {df['RETI (Bi)'].sum():,.1f} Bi")
+c3.metric("ROI Fiscal (RETI)", f"{(df['Retorno Indireto (Bi)'].sum()/df['RETI (Bi)'].sum()):.2f}x")
+c4.metric("P&D Total Gerado", f"R$ {df['P&D Nacional (Bi)'].sum():,.1f} Bi")
 
-col1.metric("Custo Lei do Bem (10 Anos)", f"R$ {total_bem_10a:,.2f} Bi")
-col2.metric("Custo RETI (10 Anos)", f"R$ {total_reti_10a:,.2f} Bi")
-col3.metric("ROI Fiscal (Retorno/Custo)", f"{(total_ret_10a/total_reti_10a):.2f}x")
-
-# Gráficos
-st.write("### Comparativo de Trajetória Fiscal (Bilhões de R$)")
+st.subheader("Trajetória do Gasto Tributário (Bi R$)")
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=df_macro["Ano"], y=df_macro["Renúncia RETI (Bi R$)"], 
-                         name="RETI (Proposta)", fill='tozeroy', line=dict(color='firebrick', width=3)))
-fig.add_trace(go.Scatter(x=df_macro["Ano"], y=df_macro["Renúncia Lei do Bem (Bi R$)"], 
-                         name="Lei do Bem (Atual)", line=dict(color='blue', dash='dash')))
+fig.add_trace(go.Scatter(x=df["Ano"], y=df["RETI (Bi)"], name="RETI", fill='tozeroy', line=dict(color='firebrick')))
+fig.add_trace(go.Scatter(x=df["Ano"], y=df["Lei do Bem (Bi)"], name="Lei do Bem", line=dict(color='blue', dash='dash')))
 st.plotly_chart(fig, use_container_width=True)
 
-st.write("### Tabela Consolidada (Valores em R$ Bilhões)")
-st.table(df_macro.style.format("{:,.2f}"))
+st.write("### Detalhamento da Simulação")
+st.dataframe(df.style.format("{:,.2f}"))
