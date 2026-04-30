@@ -1,0 +1,127 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+# Configuração da página
+st.set_page_config(page_title="Simulador RETI vs Lei do Bem", layout="wide")
+
+st.title("📊 Simulador de Impacto Fiscal: RETI vs Lei do Bem")
+st.markdown("""
+Este simulador compara o impacto fiscal e o retorno econômico do **Regime Especial de Tributação para a Inovação (RETI)** 
+frente à **Lei do Bem** em um horizonte de 10 anos.
+""")
+
+# =========================
+# SIDEBAR - PREMISSAS
+# =========================
+st.sidebar.header("⚙️ Configurações do Modelo")
+
+with st.sidebar.expander("Macroeconomia e Impostos", expanded=True):
+    tax_rate = st.slider("Alíquota Nominal (IRPJ+CSLL)", 0.0, 0.40, 0.34, 0.01)
+    ipca = st.slider("Projeção IPCA (Anual)", 0.0, 0.10, 0.045, 0.005)
+    lambda_prod = st.slider("Coeficiente de Produtividade (λ)", 0.01, 0.20, 0.08)
+
+with st.sidebar.expander("Parâmetros do RETI", expanded=True):
+    fator_f = st.selectbox("Fator F (Maturidade)", [3.5, 3.0, 2.5, 2.0, 1.0], index=0)
+    super_deducao = st.slider("Multiplicador P&D (RETI)", 1.0, 2.5, 1.6)
+    trava_uso = st.slider("Trava de Uso do Crédito (%)", 10, 100, 50) / 100
+
+with st.sidebar.expander("Comportamento da Firma", expanded=True):
+    elasticity = st.slider("Elasticidade do P&D (Sensibilidade)", -2.0, -0.1, -1.2)
+    base_revenue = st.number_input("Receita Inicial (R$)", value=1000000)
+    base_rd = st.number_input("Investimento P&D Inicial (R$)", value=150000)
+
+# =========================
+# LÓGICA DE SIMULAÇÃO
+# =========================
+years = np.arange(1, 11)
+data = []
+
+# Estados iniciais
+rev_reti = base_revenue
+rd_reti = base_rd
+credit_stock = 0
+
+rev_bem = base_revenue
+rd_bem = base_rd  # Lei do Bem geralmente não induz tanto quanto o RETI (elasticidade menor aqui para fins de comparação)
+
+for t in years:
+    # --- CÁLCULO LEI DO BEM ---
+    # Premissa: Exclusão de 60% a 80% do P&D do Lucro Líquido (ajustado para base de lucro presumido equivalente)
+    tax_baseline = rev_bem * 0.32 * tax_rate
+    beneficio_bem = (rd_bem * 0.60) * tax_rate # Estimativa simplificada de economia
+    tax_final_bem = max(0, tax_baseline - beneficio_bem)
+    renuncia_bem = tax_baseline - tax_final_bem
+
+    # --- CÁLCULO RETI ---
+    tax_baseline_reti = rev_reti * 0.32 * tax_rate
+    
+    # Efeito Indução (Adicionalidade)
+    # Custo relativo do P&D cai pelo benefício direto na base
+    custo_relativo_reducao = (super_deducao * fator_f * tax_rate) / 0.32
+    rd_induzido = rd_reti * (1 + abs(elasticity) * (custo_relativo_reducao/10))
+    
+    base_reti = (rev_reti * 0.32) - (super_deducao * rd_induzido * fator_f)
+    tax_reti_bruto = max(0, base_reti) * tax_rate
+    
+    # Gestão de Crédito
+    usable_credit = min(credit_stock, tax_reti_bruto * trava_uso)
+    tax_final_reti = tax_reti_bruto - usable_credit
+    
+    # Gerar novo crédito (se base for negativa ou pelo investimento total)
+    new_credit = rd_induzido 
+    credit_stock = (credit_stock * (1 + ipca)) + new_credit - usable_credit
+    
+    renuncia_reti = tax_baseline_reti - tax_final_reti
+    
+    # Impacto Macro (Retorno)
+    ganho_pib = lambda_prod * rd_induzido
+    retorno_fiscal = ganho_pib * tax_rate
+
+    data.append({
+        "Ano": t,
+        "Renúncia RETI": renuncia_reti,
+        "Renúncia Lei do Bem": renuncia_bem,
+        "Arrecadação RETI": tax_final_reti,
+        "Estoque de Crédito": credit_stock,
+        "Retorno Indireto (PIB)": retorno_fiscal,
+        "P&D Acumulado RETI": rd_induzido
+    })
+    
+    # Evolução para o próximo ano
+    rev_reti *= 1.05 # Crescimento vegetativo + impacto inovação
+    rd_reti = rd_induzido
+    rev_bem *= 1.03 # Lei do Bem cresce menos por menor indução
+
+df_sim = pd.DataFrame(data)
+
+# =========================
+# DASHBOARD
+# =========================
+col1, col2, col3 = st.columns(3)
+total_ren_reti = df_sim["Renúncia RETI"].sum()
+total_ren_bem = df_sim["Renúncia Lei do Bem"].sum()
+total_retorno = df_sim["Retorno Indireto (PIB)"].sum()
+
+col1.metric("Renúncia Total RETI (10 anos)", f"R$ {total_ren_reti:,.2f}")
+col2.metric("Renúncia Lei do Bem", f"R$ {total_ren_bem:,.2f}")
+col3.metric("ROI Fiscal (Retorno/Renúncia)", f"{(total_retorno/total_ren_reti):.2f}x")
+
+# Gráfico Comparativo de Renúncia
+st.subheader("📈 Trajetória de Renúncia Fiscal ao Longo do Tempo")
+fig_tax = go.Figure()
+fig_tax.add_trace(go.Scatter(x=df_sim["Ano"], y=df_sim["Renúncia RETI"], name="Renúncia RETI", line=dict(color='firebrick', width=4)))
+fig_tax.add_trace(go.Scatter(x=df_sim["Ano"], y=df_sim["Renúncia Lei do Bem"], name="Renúncia Lei do Bem", line=dict(dash='dash')))
+st.plotly_chart(fig_tax, use_container_width=True)
+
+# Gráfico de Crédito e Retorno
+st.subheader("💰 Sustentabilidade: Estoque de Crédito vs Retorno Fiscal")
+fig_res = go.Figure()
+fig_res.add_trace(go.Bar(x=df_sim["Ano"], y=df_sim["Estoque de Crédito"], name="Estoque de Crédito (Passivo)"))
+fig_res.add_trace(go.Scatter(x=df_sim["Ano"], y=df_sim["Retorno Indireto (PIB)"], name="Retorno p/ União (Ativo)", line=dict(color='green')))
+st.plotly_chart(fig_res, use_container_width=True)
+
+st.markdown("---")
+st.write("### Detalhamento dos Dados Simunados")
+st.dataframe(df_sim.style.format("{:,.2f}"))
