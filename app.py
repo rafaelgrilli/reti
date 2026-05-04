@@ -2,157 +2,199 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="RETI - Simulador v3.0", layout="wide")
+# --- CONFIGURAÇÃO DE INTERFACE ---
+st.set_page_config(page_title="RETI - Decision Support System", layout="wide")
 
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
     html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; }
-    .stMetric { background: #f8f9fb; border: 1px solid #e6e9ef; padding: 15px; border-radius: 5px; }
-    .mono { font-family: 'IBM Plex Mono', monospace; }
+    .stMetric { background: #f1f3f6; border-left: 5px solid #185FA5; padding: 15px; border-radius: 4px; }
+    .reportview-container { background: #fafafa; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- LÓGICA DE NEGÓCIO ---
+# --- MOTOR DE CÁLCULO AVANÇADO ---
 
 def calcular_fator_f(receita_mm):
-    """Implementa o Tapering Linear conforme item 3.2 da Proposta"""
+    """Tapering Linear: Transição suave para evitar o efeito Notch"""
     if receita_mm <= 3.24: return 3.5
     if receita_mm <= 78: return 2.5
     if receita_mm <= 200:
-        # Redução linear: de 2.5 (em 78M) até 1.0 (em 200M)
-        # coeficiente = (2.5 - 1.0) / (200 - 78) = 0.01229
         return max(1.0, 2.5 - 0.01229 * (receita_mm - 78))
     return 1.0
 
-def motor_simulacao(p):
-    anos = np.arange(1, p['anos'] + 1)
-    rec = p['rec_inicial']
-    df_lista = []
-    estoque_credito = 0
-    m_efetivo = p['mult_base']
+def motor_reti_pro(p):
+    anos_total = p['anos']
+    lag = 3  # Anos para o P&D virar produtividade
+    deprec = 0.15 # Depreciação anual do estoque de conhecimento
     
-    for t in anos:
+    rec = p['rec_inicial']
+    estoque_conhecimento = 0
+    estoque_credito_fiscal = 0
+    
+    # Histórico para gerenciar o Lag de maturação
+    historico_pd_adic = [0] * (anos_total + lag + 1)
+    resultados = []
+
+    for t in range(1, anos_total + 1):
+        # 1. Dinâmica de Receita e Fator F
         rec_ant = rec
         rec = rec * (1 + p['crescimento'])
-        cresc_real = (rec/rec_ant) - 1
         f = calcular_fator_f(rec)
         
-        # Cálculo do P&D
+        # 2. P&D e Adicionalidade (Efeito Preço)
         pd_original = rec * p['intensidade_pd']
-        # Adicionalidade baseada na elasticidade sobre o custo do benefício
-        pd_adicional = pd_original * abs(p['elasticidade']) * (m_efetivo * f * 0.34)
+        # Adicionalidade baseada na elasticidade-custo (ε)
+        pd_adicional = pd_original * abs(p['elasticidade']) * (p['mult_base'] * f * 0.34)
         pd_total = pd_original + pd_adicional
         
-        # Regra Tributária
-        imp_referencia = (rec * 0.32) * 0.34
-        limite_compensacao = imp_referencia * 0.50
+        # Armazena P&D adicional para maturação futura
+        if t + lag <= anos_total:
+            historico_pd_adic[t + lag] = pd_adicional
+            
+        # 3. Acúmulo de Produtividade (Modelo de Estoque)
+        pd_maturado = historico_pd_adic[t]
+        estoque_conhecimento = (estoque_conhecimento * (1 - deprec)) + pd_maturado
         
-        novo_credito = (m_efetivo * pd_total * f) * 0.34
-        estoque_credito += novo_credito
+        # Ganho de produtividade (Elasticidade P&D/Produtividade estimada em 0.08)
+        ganho_prod = (estoque_conhecimento / rec) * 0.08 if rec > 0 else 0
         
-        # Gatilho de Performance
-        pode_compensar = True
+        # 4. Retorno Fiscal Indireto (O que volta para o cofre via lucro extra)
+        retorno_indireto = (rec * ganho_prod) * 0.34
+        
+        # 5. Cálculo da Renúncia RETI (Fluxo de Caixa Fiscal)
+        imp_ref = (rec * 0.32) * 0.34
+        limite_comp = imp_ref * 0.50 # Trava de 50%
+        
+        novo_credito = (p['mult_base'] * pd_total * f) * 0.34
+        estoque_credito_fiscal += novo_credito
+        
+        # Gatilho de Performance (Item 6.3)
+        pode_usar = True
         if t > 3:
-            pode_compensar = (cresc_real >= 0.10) or (p['patente_ano'] <= t) or (p['potec'] > 15)
+            pode_usar = ((rec/rec_ant - 1) >= 0.10) or (p['patente_ano'] <= t) or (p['potec'] > 15)
+            
+        uso_credito = min(estoque_credito_fiscal, limite_comp) if pode_usar else 0
+        imp_final = max(imp_ref * 0.25, imp_ref - uso_credito) # Cap 25%
+        renuncia = imp_ref - imp_final
+        estoque_credito_fiscal -= renuncia
         
-        uso_credito = min(estoque_credito, limite_compensacao) if pode_compensar else 0
-        imp_final = max(imp_referencia * 0.25, imp_referencia - uso_credito)
-        renuncia = imp_referencia - imp_final
-        estoque_credito -= renuncia
-        
-        df_lista.append({
-            'Ano': t, 'Receita': rec, 'Fator_F': f, 'PD_Total': pd_total, 
-            'PD_Adicional': pd_adicional, 'Renuncia': renuncia, 
-            'Estoque_Credito': estoque_credito, 'Imp_Final': imp_final,
-            'Status': 'Ativo' if pode_compensar else 'Suspenso'
+        resultados.append({
+            'Ano': t,
+            'Receita': rec,
+            'Renuncia': renuncia,
+            'Retorno_Indireto': retorno_indireto,
+            'Saldo_Fiscal_Neto': retorno_indireto - renuncia,
+            'Ganho_Prod_Pct': ganho_prod * 100,
+            'PD_Total': pd_total,
+            'Fator_F': f,
+            'Status': 'Ativo' if pode_usar else 'Suspenso'
         })
         
-    return pd.DataFrame(df_lista)
+    return pd.DataFrame(resultados)
 
-# --- SIDEBAR ---
+# --- INTERFACE ---
+
+st.title("🏛️ RETI: Simulador de Impacto de Longo Prazo")
+st.caption("Versão 4.0 - Modelo de Maturação de P&D e Sustentabilidade Fiscal")
 
 with st.sidebar:
-    st.header("🎛️ Parâmetros SPE/MF")
+    st.header("Configurações Estratégicas")
     
-    with st.expander("📡 Universo Macro", expanded=True):
-        n_firmas = st.slider("Universo de Firmas", 500, 10000, 4500)
-        teto_fiscal = st.number_input("Teto Safe-Stop (R$ Bi)", value=2.2)
-        mult_base = st.slider("Multiplicador M (Base)", 1.0, 1.6, 1.25)
+    with st.expander("📊 Parâmetros Macro (SPE/MF)", expanded=True):
+        n_firmas = st.number_input("Universo de Firmas", value=4500)
+        teto_lrf = st.slider("Teto LRF (R$ Bi)", 1.0, 5.0, 2.2)
+        mult = st.slider("Multiplicador M", 1.0, 1.5, 1.25)
         elast = st.slider("Elasticidade (ε)", -2.0, -0.5, -1.27)
         
-    with st.expander("🏢 Firma Representativa"):
-        rec_ini = st.slider("Receita Inicial (R$ MM)", 1, 300, 15)
-        int_pd = st.slider("Intensidade P&D (%)", 1.0, 25.0, 7.0) / 100
-        grow = st.slider("Crescimento Anual (%)", 0.0, 30.0, 12.0) / 100
-        potec = st.slider("% Pessoal Científico", 5, 50, 18)
-        pat_ano = st.slider("Ano do Depósito Patente", 1, 10, 2)
+    with st.expander("🏢 Perfil da Firma"):
+        rec_ini = st.number_input("Receita Inicial (R$ MM)", value=15.0)
+        int_pd = st.slider("Intensidade P&D (%)", 1.0, 20.0, 7.0) / 100
+        cresc = st.slider("Crescimento Anual (%)", 0.0, 25.0, 12.0) / 100
+        potec = st.slider("% Pessoal Técnico", 5, 40, 18)
+        patente = st.slider("Ano Depósito Patente", 1, 10, 3)
 
-    anos_sim = st.slider("Horizonte (Anos)", 3, 15, 10)
+    horizonte = st.slider("Horizonte de Análise (Anos)", 5, 15, 10)
 
 # --- PROCESSAMENTO ---
-p_sim = {
-    'rec_inicial': rec_ini, 'intensidade_pd': int_pd, 'crescimento': grow,
-    'elasticidade': elast, 'mult_base': mult_base, 'anos': anos_sim,
-    'patente_ano': pat_ano, 'potec': potec
+params = {
+    'anos': horizonte, 'rec_inicial': rec_ini, 'crescimento': cresc,
+    'intensidade_pd': int_pd, 'elasticidade': elast, 'mult_base': mult,
+    'patente_ano': patente, 'potec': potec
 }
 
-df_res = motor_simulacao(p_sim)
-renuncia_macro = (df_res['Renuncia'].iloc[-1] * n_firmas) / 1000 
+df = motor_reti_pro(params)
 
 # --- DASHBOARD ---
-st.title("RETI — Simulador de Política Econômica")
-st.caption("v3.0 · Framework de Apoio à Decisão · Proposta Executiva SPE/MF")
 
-# KPIs
+# KPIs Superiores
 k1, k2, k3, k4 = st.columns(4)
-total_pd_adic = df_res['PD_Adicional'].sum()
-total_renuncia = df_res['Renuncia'].sum()
-roi_adic = total_pd_adic / total_renuncia if total_renuncia > 0 else 0
+renuncia_final = (df['Renuncia'].iloc[-1] * n_firmas) / 1000
+retorno_final = (df['Retorno_Indireto'].iloc[-1] * n_firmas) / 1000
+payback_ano = df[df['Saldo_Fiscal_Neto'] > 0]['Ano'].min()
 
-k1.metric("Renúncia Macro (Ano Final)", f"R$ {renuncia_macro:.2f} Bi")
-# CORREÇÃO AQUI: de :.2x para :.2f com 'x' manual
-k2.metric("Alavancagem (Invest/Renúncia)", f"{roi_adic:.2f}x")
-k3.metric("M Efetivo", f"{mult_base:.2f}")
-k4.metric("Status LRF", "⚠️ RISCO" if renuncia_macro > teto_fiscal else "✅ DENTRO", 
-          delta=f"{((renuncia_macro/teto_fiscal)-1)*100:.1f}% vs Teto" if teto_fiscal > 0 else "0%")
+k1.metric("Custo Fiscal (Ano Final)", f"R$ {renuncia_final:.2f} Bi")
+k2.metric("Retorno Indireto (Ano Final)", f"R$ {retorno_final:.2f} Bi")
+k3.metric("Payback Fiscal (Ano)", f"Ano {payback_ano}" if pd.notnull(payback_ano) else "N/A")
+k4.metric("Status LRF", "✅ OK" if renuncia_final <= teto_lrf else "⚠️ RISCO", 
+          delta=f"{renuncia_final - teto_lrf:.2f} Bi vs Teto")
 
-# Gráficos
-tab_firma, tab_macro, tab_tecnica = st.tabs(["🔍 Análise da Firma", "📊 Visão do Tesouro", "⚙️ Metodologia"])
+t1, t2, t3 = st.tabs(["📈 Sustentabilidade Fiscal", "🏢 Visão da Firma", "📚 Metodologia"])
 
-with tab_firma:
-    col_f1, col_f2 = st.columns([2, 1])
-    with col_f1:
-        fig_pd = go.Figure()
-        fig_pd.add_trace(go.Scatter(x=df_res['Ano'], y=df_res['PD_Total'], name="P&D com RETI", line=dict(color='#185FA5', width=3)))
-        fig_pd.add_trace(go.Bar(x=df_res['Ano'], y=df_res['Renuncia'], name="Renúncia Fiscal", marker_color='#1D9E75', opacity=0.6))
-        fig_pd.update_layout(title="Indução de P&D vs. Renúncia (R$ MM)", hovermode="x unified")
-        st.plotly_chart(fig_pd, use_container_width=True)
-    with col_f2:
-        st.markdown("**Degressividade do Fator F**")
-        fig_f = px.line(df_res, x='Ano', y='Fator_F', markers=True, color_discrete_sequence=['#BA7517'])
-        st.plotly_chart(fig_f, use_container_width=True)
-
-with tab_macro:
-    st.subheader("Sustentabilidade e Impacto em Produtividade")
-    df_res['Produtividade_Acum'] = (df_res['PD_Adicional'] / df_res['Receita']).cumsum() * 0.15
+with t1:
+    st.subheader("O 'Trade-off' Fiscal: Renúncia vs. Arrecadação por Produtividade")
+    
     fig_macro = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_macro.add_trace(go.Scatter(x=df_res['Ano'], y=df_res['Renuncia']*n_firmas/1000, name="Renúncia Total (Bi)", fill='tozeroy'), secondary_y=False)
-    fig_macro.add_trace(go.Scatter(x=df_res['Ano'], y=df_res['Produtividade_Acum']*100, name="Ganho Produtividade (%)", line=dict(dash='dash', color='red')), secondary_y=True)
-    fig_macro.update_layout(title="Projeção de Longo Prazo")
+    
+    # Renúncia (Saída)
+    fig_macro.add_trace(go.Bar(x=df['Ano'], y=df['Renuncia']*n_firmas/1000, 
+                               name="Renúncia Fiscal (Custo)", marker_color='#E24B4A', opacity=0.7), secondary_y=False)
+    
+    # Retorno Indireto (Entrada)
+    fig_macro.add_trace(go.Scatter(x=df['Ano'], y=df['Retorno_Indireto']*n_firmas/1000, 
+                                   name="Retorno Indireto (Ganho)", line=dict(color='#1D9E75', width=4)), secondary_y=False)
+    
+    # Linha de Produtividade
+    fig_macro.add_trace(go.Scatter(x=df['Ano'], y=df['Ganho_Prod_Pct'], 
+                                   name="Ganho Produtividade (%)", line=dict(color='#BA7517', dash='dot')), secondary_y=True)
+    
+    fig_macro.update_layout(legend=dict(orientation="h", y=1.1), hovermode="x unified")
+    fig_macro.update_yaxes(title_text="R$ Bilhões", secondary_y=False)
+    fig_macro.update_yaxes(title_text="Produtividade (%)", secondary_y=True)
+    
     st.plotly_chart(fig_macro, use_container_width=True)
+    
+    st.info(f"""
+    **Análise de Sustentabilidade:** Observe que nos primeiros {lag} anos o retorno é quase nulo devido ao tempo de maturação tecnológica. 
+    O 'Breakeven' fiscal ocorre quando a linha verde cruza a barra vermelha. 
+    Neste cenário, o governo recupera o investimento via aumento da base tributária gerada pela eficiência das firmas.
+    """)
 
-with tab_tecnica:
+with t2:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.write("**Fluxo de Caixa da Firma (R$ MM)**")
+        fig_firma = go.Figure()
+        fig_firma.add_trace(go.Scatter(x=df['Ano'], y=df['PD_Total'], name="P&D Total", fill='tozeroy'))
+        fig_firma.add_trace(go.Scatter(x=df['Ano'], y=df['Renuncia'], name="Incentivo RETI", fill='tonexty'))
+        st.plotly_chart(fig_firma, use_container_width=True)
+    with c2:
+        st.write("**Evolução do Fator F (Tapering)**")
+        st.line_chart(df.set_index('Ano')['Fator_F'])
+    
+    st.dataframe(df[['Ano', 'Receita', 'PD_Total', 'Renuncia', 'Ganho_Prod_Pct', 'Status']].style.format(precision=2))
+
+with t3:
     st.markdown(f"""
-    ### Notas Técnicas
-    1. **Tapering:** Transição suave de F=2.5 para F=1.0 para evitar o "Efeito Notch".
-    2. **Gatilhos:** Bloqueio de carry-forward no Ano 4 se critérios de performance não forem atingidos.
-    3. **Safe-Stop:** Mecanismo do Art. 5.2.3 para ajuste automático do multiplicador.
+    ### Premissas do Modelo Avançado
+    1. **Time-Lag de Maturação ({lag} anos):** O P&D investido no Ano 1 só começa a impactar a produtividade no Ano 4. Isso reflete o ciclo real de inovação (P&D -> Protótipo -> Mercado -> Eficiência).
+    2. **Depreciação de Conhecimento (15% aa):** O estoque de inovação perde valor ao longo do tempo. Para manter o ganho de produtividade, a firma precisa inovar continuamente.
+    3. **Transmissão Produtividade -> Fiscal:** O modelo assume que cada 1% de ganho de produtividade se traduz em aumento de lucro operacional, tributado a 34% (IRPJ/CSLL).
+    4. **Safe-Stop:** O multiplicador M ({mult}) é a alavanca principal. Se o custo fiscal no Ano {horizonte} exceder R$ {teto_lrf} Bi, a política exige recalibragem.
     """)
 
 st.divider()
-st.markdown("<center style='color:gray; font-size:10px;'>CRP Calibrado · IBGE/PINTEC · ε = -1.27</center>", unsafe_allow_html=True)
+st.markdown("<center style='color:gray; font-size:10px;'>Simulador RETI v4.0 | Desenvolvido para SPE/MF | Baseado em Kannebley Jr. (2016) e Manual de Frascati</center>", unsafe_allow_html=True)
