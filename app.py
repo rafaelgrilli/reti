@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="RETI — Simulador", layout="wide")
 
 # ─────────────────────────────────────────────
-# CORE ECONÔMICO (MESMA LÓGICA, MAIS ROBUSTO)
+# CORE ECONÔMICO
 # ─────────────────────────────────────────────
 
 def fator_f(r, i):
@@ -97,6 +97,9 @@ def sim_macro(n, rec, i, g, e, m, anos):
     df = pd.DataFrame(rows, columns=["Ano","Firmas","Renúncia","P&D","Retorno"])
     df["Renúncia Acum"] = df["Renúncia"].cumsum()
     df["Retorno Acum"] = df["Retorno"].cumsum()
+    df["Renúncia Líquida"] = df["Renúncia"] - df["Retorno"]
+    df["Renúncia Líquida Acum"] = df["Renúncia Líquida"].cumsum()
+
     return df
 
 # ─────────────────────────────────────────────
@@ -132,13 +135,25 @@ pnd_add = df_c["P&D"].sum() - df_s["P&D"].sum()
 inc = df_c["Incentivo"].sum()
 roi = pnd_add/inc if inc>0 else 0
 
+ren_total = df_m["Renúncia"].sum()
+ret_total = df_m["Retorno"].sum()
+ratio_retorno = ret_total/ren_total if ren_total>0 else 0
+elasticidade_fiscal = df_m["P&D"].sum()/ren_total if ren_total>0 else 0
+
+# tendência
+tendencia_ren = np.polyfit(df_m["Ano"], df_m["Renúncia"], 1)[0]
+tendencia_ret = np.polyfit(df_m["Ano"], df_m["Retorno"], 1)[0]
+
+# payback
+payback = next((t for t in df_m["Ano"] if df_m["Retorno Acum"].iloc[t-1] > df_m["Renúncia Acum"].iloc[t-1]), None)
+
 # ─────────────────────────────────────────────
-# DASHBOARD COM ABAS (RESTAURADO)
+# DASHBOARD
 # ─────────────────────────────────────────────
 
 tab1, tab2, tab3 = st.tabs(["📈 Firma","🏛️ Fiscal","🔍 Diagnóstico"])
 
-# ───────── FIRMA
+# FIRMA
 with tab1:
     st.subheader("Impacto Microeconômico")
 
@@ -155,89 +170,51 @@ with tab1:
 
     st.dataframe(df_c)
 
-# ───────── MACRO
+# FISCAL
 with tab2:
-    st.subheader("Impacto Fiscal Agregado")
-
-    c1,c2,c3 = st.columns(3)
-    c1.metric("Renúncia Total",f"{df_m['Renúncia Acum'].iloc[-1]:.2f} Bi")
-    c2.metric("P&D Induzido",f"{df_m['P&D'].sum():.2f} Bi")
-    c3.metric("Retorno Fiscal",f"{df_m['Retorno'].sum():.2f} Bi")
+    st.subheader("Sustentabilidade Intertemporal")
 
     fig = go.Figure()
-    fig.add_trace(go.Bar(x=df_m["Ano"], y=df_m["P&D"], name="P&D"))
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia"], name="Renúncia"))
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Retorno"], name="Retorno"))
-    fig.update_layout(title="Fluxo Fiscal do Programa")
+    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia Acum"], name="Renúncia Acum"))
+    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Retorno Acum"], name="Retorno Acum"))
+    fig.update_layout(title="Renúncia vs Retorno Acumulado")
     st.plotly_chart(fig, use_container_width=True)
 
-# ───────── DIAGNÓSTICO
-with st.expander("🧠 Diagnóstico Econômico e Fiscal (Leitura para Decisão)"):
-    ren_total = df_macro["Renúncia Fiscal (R$ Bi)"].sum()
-    bf_total = df_macro["Retorno Tributário Indireto (R$ Bi)"].sum()
-    pnd_total = df_macro["P&D Incremental (R$ Bi)"].sum()
-    ren_liq_total = df_macro["Renúncia Líquida (R$ Bi)"].sum()
+    st.dataframe(df_m)
 
-    ratio_retorno = bf_total / ren_total if ren_total > 0 else 0
-    elasticidade_fiscal = pnd_total / ren_total if ren_total > 0 else 0
+# DIAGNÓSTICO
+with tab3:
+    st.subheader("Diagnóstico Estratégico")
 
-    tendencia_ren = np.polyfit(df_macro["Ano"], df_macro["Renúncia Fiscal (R$ Bi)"], 1)[0]
-    tendencia_bf = np.polyfit(df_macro["Ano"], df_macro["Retorno Tributário Indireto (R$ Bi)"], 1)[0]
+    st.markdown(f"""
+**ROI fiscal:** {ratio_retorno:.2f}x  
+**Elasticidade fiscal:** {elasticidade_fiscal:.2f}  
+**Payback:** {"Não ocorre" if payback is None else f"Ano {payback}"}  
+    """)
 
-    st.markdown("### 1. Eficiência Econômica")
-    if elasticidade_fiscal > 1:
-        st.success(f"O programa gera adicionalidade relevante: cada R$1 de renúncia induz R${elasticidade_fiscal:.2f} em P&D.")
+    if tendencia_ren > tendencia_ret:
+        st.error("Trajetória INSUSTENTÁVEL: renúncia cresce mais rápido que retorno")
     else:
-        st.warning(f"A adicionalidade é limitada: cada R$1 de renúncia gera apenas R${elasticidade_fiscal:.2f} em P&D.")
+        st.success("Trajetória controlada")
 
-    st.markdown("### 2. Sustentabilidade Fiscal")
-    if ratio_retorno > 1:
-        st.success(f"O backflow cobre integralmente o custo fiscal (ROI = {ratio_retorno:.2f}x).")
-    elif ratio_retorno > 0.5:
-        st.warning(f"O programa recupera parcialmente a renúncia (ROI = {ratio_retorno:.2f}x), com custo fiscal relevante.")
-    else:
-        st.error(f"O programa apresenta baixa recuperação fiscal (ROI = {ratio_retorno:.2f}x).")
+    st.markdown("### Interpretação Econômica")
 
-    st.markdown("### 3. Dinâmica Intertemporal")
-    if tendencia_ren > tendencia_bf:
-        st.error("A renúncia cresce mais rápido que o retorno → trajetória fiscal **não sustentável** no longo prazo.")
-    else:
-        st.success("O retorno cresce em linha ou acima da renúncia → trajetória potencialmente sustentável.")
-
-    st.markdown("### 4. Diagnóstico Estrutural")
     if elasticidade_fiscal < 1:
-        st.markdown("- O principal problema é **baixa resposta comportamental das firmas**.")
-    if ratio_retorno < 0.5:
-        st.markdown("- O desenho gera **vazamento fiscal elevado** (baixa captura tributária do benefício).")
-    if tendencia_ren > tendencia_bf:
-        st.markdown("- Há risco de **explosão intertemporal da renúncia** sem contrapartida.")
+        st.markdown("- Baixa adicionalidade → política pouco eficiente")
 
-    st.markdown("### 5. Implicações de Política (o que fazer?)")
+    if ratio_retorno < 0.5:
+        st.markdown("- Alto vazamento fiscal → baixa recuperação tributária")
+
+    if tendencia_ren > tendencia_ret:
+        st.markdown("- Risco de explosão fiscal no longo prazo")
+
+    st.markdown("### Recomendações de Política")
 
     if ratio_retorno < 1:
-        st.markdown("""
-- 🔧 **Reduzir o multiplicador RETI** → corta renúncia marginal sem eliminar incentivo  
-- 🎯 **Focalizar por intensidade de P&D** → concentrar benefício em firmas com maior adicionalidade  
-- ⏳ **Introduzir limite temporal ou sunset clause** → evita acumulação estrutural de passivo fiscal  
-        """)
+        st.markdown("- Reduzir multiplicador RETI")
 
     if elasticidade_fiscal < 1:
-        st.markdown("""
-- 📉 **Recalibrar elasticidade implícita** (problema não é só incentivo, é capacidade de resposta)  
-- 🧪 **Complementar com instrumentos não fiscais** (subvenção, crédito direcionado)  
-        """)
+        st.markdown("- Focalizar em setores com maior intensidade tecnológica")
 
-    if tendencia_ren > tendencia_bf:
-        st.markdown("""
-- ⚠️ **Implementar gatilhos fiscais automáticos**  
-    - redução do benefício se ROI < threshold  
-    - teto de renúncia como % do PIB  
-        """)
-
-    st.markdown("### 6. Conclusão Executiva")
-    if ratio_retorno > 1 and elasticidade_fiscal > 1:
-        st.success("Programa eficiente e sustentável → candidato a expansão.")
-    elif ratio_retorno > 0.5:
-        st.warning("Programa economicamente válido, mas exige **ajustes de desenho** para sustentabilidade.")
-    else:
-        st.error("Programa fiscalmente frágil → requer **reformulação estrutural antes de escala**.")
+    if tendencia_ren > tendencia_ret:
+        st.markdown("- Implementar teto de renúncia e gatilhos automáticos")
