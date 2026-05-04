@@ -2,203 +2,219 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 
 # ─────────────────────────────────────────────
-# CONFIG
+# CONFIGURAÇÕES E GLOSSÁRIO
 # ─────────────────────────────────────────────
-st.set_page_config(page_title="RETI — Simulador", layout="wide")
+st.set_page_config(page_title="RETI — Simulador de Apoio à Decisão", layout="wide")
+
+HELP_TEXT = {
+    "rec": "Receita Bruta Anual (R$ MM). Define o enquadramento nas faixas do Fator F.",
+    "i": "Percentual da receita investido em P&D. Essencial para o gatilho RETI-SME.",
+    "g": "Taxa de crescimento anual. Se < 10% após o Ano 3, suspende o uso de créditos.",
+    "e": "Elasticidade-custo (padrão -1.27). Mede quanto o investimento privado sobe ao reduzir o custo tributário.",
+    "m": "Multiplicador sobre o gasto de P&D. É a alavanca central do incentivo fiscal.",
+    "n": "Número total de empresas inovadoras estimadas no universo do programa.",
+    "teto": "Limite de renúncia anual estabelecido para acionar o Safe-Stop (R$ 2,2 Bi)."
+}
 
 # ─────────────────────────────────────────────
-# CORE ECONÔMICO (CORRIGIDO: Fator F fiel ao Word)
+# FUNÇÕES DE CÁLCULO (O "MOTOR" DO RETI)
 # ─────────────────────────────────────────────
 
-def factor_f_corrigido(r):
+def fator_f_oficial(r):
+    """Implementa a tabela progressiva do Item 3.2 do documento executivo."""
     if r <= 3.24: return 3.5
     elif r <= 78: return 2.5
     else: return max(1.0, 2.5 - 0.012*(r-78))
 
-def imposto_ref(rec):
+def imposto_referencia(rec):
+    """Calcula IRPJ/CSLL base no Lucro Presumido (32% de base, 34% de alíquota)."""
     return (rec * 0.32) * 0.34
 
-# ─────────────────────────────────────────────
-# FIRMA (AGORA COM PRESCRIÇÃO E GATILHO DE PERFORMANCE)
-# ─────────────────────────────────────────────
-
-def sim_firma(rec0, i, g, e, m, anos, sem=False):
+def simular_unidade(rec0, i, g, e, m, anos, sem_reti=False):
     rec = rec0 * 1e6
-    # Fila de créditos: [valor, ano_expiracao] para controle de 5 anos
-    fila_creditos = [] 
-    out = []
+    fila_creditos = [] # Controle FIFO para prescrição de 5 anos
+    resultados = []
 
     for t in range(1, anos+1):
-        rec_ant = rec
+        rec_anterior = rec
         rec *= (1 + g)
-        crescimento = (rec / rec_ant) - 1
+        crescimento_obtido = (rec / rec_anterior) - 1
+        base_pd_natural = rec * i
         
-        base_estimada = rec * i
-
-        if sem:
-            total_pd = base_estimada
-            imp = imposto_ref(rec)
-            inc = 0
-            f = 0
-            uso_credito = 0
-            estoque_total = 0
+        if sem_reti:
+            total_pd = base_pd_natural
+            imp = imposto_referencia(rec)
+            inc, f, uso, est = 0, 0, 0, 0
         else:
-            f = factor_f_corrigido(rec/1e6)
-            custo = m * f * 0.34
-            delta = max(0, base_estimada * abs(e) * custo)
-            total_pd = base_estimada + delta
+            f = fator_f_oficial(rec/1e6)
+            custo_marginal = m * f * 0.34
+            # Adicionalidade baseada na elasticidade
+            investimento_adicional = max(0, base_pd_natural * abs(e) * custo_marginal)
+            total_pd = base_pd_natural + investimento_adicional
 
-            # Gerar crédito e adicionar à fila com validade de 5 anos
-            credito_gerado = m * total_pd * f * 0.34
-            fila_creditos.append([credito_gerado, t + 5])
+            # Geração de crédito e controle de prescrição (Item 6.4)
+            novo_credito = m * total_pd * f * 0.34
+            fila_creditos.append([novo_credito, t + 5])
+            fila_creditos = [c for c in fila_creditos if c[1] > t] # Remove expirados
 
-            # 1. Limpeza de créditos expirados (Prescrição)
-            fila_creditos = [c for c in fila_creditos if c[1] > t]
-
-            # 2. Gatilho de Performance (Item 6.3 do Word)
+            # Gatilho de Performance (Item 6.3)
             pode_compensar = True
-            if t > 3 and crescimento < 0.10: # Trava de 10% de crescimento
+            if t > 3 and crescimento_obtido < 0.10:
                 pode_compensar = False
 
-            imp_ref = imposto_ref(rec)
-            limite_uso = imp_ref * 0.5
-            uso_credito = 0
+            imp_ref = imposto_referencia(rec)
+            limite_anual = imp_ref * 0.5
+            uso = 0
 
             if pode_compensar:
-                # Consumo FIFO
-                saldo_disponivel = sum(c[0] for c in fila_creditos)
-                uso_credito = min(saldo_disponivel, limite_uso)
-                
-                sobra_uso = uso_credito
+                saldo_total = sum(c[0] for c in fila_creditos)
+                uso = min(saldo_total, limite_anual)
+                # Abate FIFO do estoque
+                sobra_para_abater = uso
                 for c in fila_creditos:
-                    if sobra_uso <= 0: break
-                    baixar = min(c[0], sobra_uso)
-                    c[0] -= baixar
-                    sobra_uso -= baixar
+                    if sobra_para_abater <= 0: break
+                    abatimento = min(c[0], sobra_para_abater)
+                    c[0] -= abatimento
+                    sobra_para_abater -= abatimento
 
-            # 3. Cap de Exoneração (25% do imposto devido)
-            imp = max(imp_ref * 0.25, imp_ref - uso_credito)
+            # Cap de 25% (Item 6.1)
+            imp = max(imp_ref * 0.25, imp_ref - uso)
             inc = imp_ref - imp
-            estoque_total = sum(c[0] for c in fila_creditos)
+            est = sum(c[0] for c in fila_creditos)
 
-        # Retorno social/econômico (métrica original do seu código)
-        retorno = (total_pd - base_estimada) * 0.65 * 0.28 if not sem else 0
+        # Cálculo do retorno socioeconômico (Externalidade positiva)
+        retorno_estimado = (total_pd - base_pd_natural) * 0.65 * 0.28 if not sem_reti else 0
 
-        out.append([
+        resultados.append([
             t, rec/1e6, total_pd/1e6, imp/1e6, inc/1e6,
-            retorno/1e6, f, estoque_total/1e6
+            retorno_estimado/1e6, f, est/1e6, crescimento_obtido
         ])
 
-    return pd.DataFrame(out, columns=[
+    return pd.DataFrame(resultados, columns=[
         "Ano","Receita","P&D","Imposto","Incentivo",
-        "Retorno","Fator","Estoque Crédito"
+        "Retorno","Fator","Estoque Crédito","Crescimento"
     ])
 
-# ─────────────────────────────────────────────
-# MACRO (COM SAFE-STOP DO MULTIPLICADOR)
-# ─────────────────────────────────────────────
-
-def sim_macro(n, rec, i, g, e, m_base, anos):
+def simular_macro_detalhado(n, rec_m, i, g_m, e, m_base, anos):
     rows = []
     m_dinamico = m_base
-    teto = 2.2 # R$ Bi conforme Word
+    teto_fiscal = 2.2 # R$ Bilhões
 
     for t in range(1, anos+1):
-        n_t = int(n * (1.03**t))
-        # Simulamos a média para o ano
-        df_f = sim_firma(rec, i, g, e, m_dinamico, t)
-        linha = df_f.iloc[-1]
+        n_atividades = int(n * (1.03**t)) # Crescimento vegetativo de firmas
+        df_unidade = simular_unidade(rec_m, i, g_m, e, m_dinamico, t)
+        last = df_unidade.iloc[-1]
         
-        ren_total = (linha["Incentivo"] * n_t) / 1000
+        renuncia_bi = (last["Incentivo"] * n_atividades) / 1000
         
-        # Ajuste Safe-Stop para o próximo ciclo
-        if ren_total > teto:
-            m_dinamico = max(1.0, m_dinamico * 0.95)
+        # Mecanismo Safe-Stop (Item 5.3)
+        if renuncia_bi > teto_fiscal:
+            m_dinamico = max(1.0, m_dinamico * 0.92)
 
         rows.append([
-            t, n_t, ren_total, 
-            (linha["P&D"] * n_t)/1000, 
-            (linha["Retorno"] * n_t)/1000, 
-            (linha["Estoque Crédito"] * n_t)/1000,
+            t, n_atividades, renuncia_bi, 
+            (last["P&D"] * n_atividades)/1000, 
+            (last["Retorno"] * n_atividades)/1000, 
+            (last["Estoque Crédito"] * n_atividades)/1000,
             m_dinamico
         ])
 
-    df = pd.DataFrame(rows, columns=["Ano","Firmas","Renúncia","P&D","Retorno","Estoque", "M_Efetivo"])
+    df = pd.DataFrame(rows, columns=["Ano","Firmas","Renúncia","P&D","Retorno","Estoque","M_Efetivo"])
     df["Renúncia Acum"] = df["Renúncia"].cumsum()
     df["Retorno Acum"] = df["Retorno"].cumsum()
     return df
 
 # ─────────────────────────────────────────────
-# INTERFACE (RECOMPONDO SEU LAYOUT ORIGINAL)
+# INTERFACE STREAMLIT (RECOMPOSIÇÃO INTEGRAL)
 # ─────────────────────────────────────────────
 
 with st.sidebar:
-    st.header("Parâmetros da Firma")
-    rec_input = st.slider("Receita Inicial (R$ MM)", 1.0, 100.0, 15.0)
-    i_input = st.slider("Intensidade P&D (%)", 1.0, 20.0, 7.0)/100
-    g_input = st.slider("Crescimento (%)", 0.0, 20.0, 12.0)/100
+    st.header("📋 Parâmetros da Firma")
+    s_rec = st.slider("Receita Inicial (R$ MM)", 1.0, 100.0, 15.0, help=HELP_TEXT["rec"])
+    s_i = st.slider("Intensidade P&D (%)", 1.0, 20.0, 7.0, help=HELP_TEXT["i"])/100
+    s_g = st.slider("Crescimento Anual (%)", 0.0, 25.0, 12.0, help=HELP_TEXT["g"])/100
 
-    st.header("Macro")
-    n_input = st.number_input("Firmas", 1000, 10000, 4000)
-    rec_m_input = st.slider("Receita Média", 1.0, 50.0, 10.0)
-    g_m_input = st.slider("Crescimento Universo", 0.0, 15.0, 8.0)/100
+    st.header("🌍 Parâmetros Macro")
+    s_n = st.number_input("Firmas Elegíveis", 1000, 10000, 4500, help=HELP_TEXT["n"])
+    s_rec_m = st.slider("Receita Média do Universo", 1.0, 50.0, 12.0)
+    s_g_m = st.slider("Crescimento do Universo (%)", 0.0, 15.0, 8.0)/100
 
-    st.header("Política")
-    e_input = st.slider("Elasticidade", -2.0, -0.5, -1.27)
-    m_input = st.slider("Multiplicador", 1.0, 1.6, 1.25)
-    anos_input = st.slider("Horizonte", 5, 15, 10)
+    st.header("⚖️ Política e Governança")
+    s_e = st.slider("Elasticidade-Custo", -2.0, -0.1, -1.27, help=HELP_TEXT["e"])
+    s_m = st.slider("Multiplicador (M)", 1.0, 1.6, 1.25, help=HELP_TEXT["m"])
+    s_anos = st.slider("Horizonte de Simulação", 5, 15, 10)
 
-# Execução
-df_c = sim_firma(rec_input, i_input, g_input, e_input, m_input, anos_input)
-df_s = sim_firma(rec_input, i_input, g_input, e_input, m_input, anos_input, True)
-df_m = sim_macro(n_input, rec_m_input, i_input, g_m_input, e_input, m_input, anos_input)
+# EXECUÇÃO DOS MODELOS
+df_firma_com = simular_unidade(s_rec, s_i, s_g, s_e, s_m, s_anos)
+df_firma_sem = simular_unidade(s_rec, s_i, s_g, s_e, s_m, s_anos, sem_reti=True)
+df_macro = simular_macro_detalhado(s_n, s_rec_m, s_i, s_g_m, s_e, s_m, s_anos)
 
-# KPIs
-pnd_add = df_c["P&D"].sum() - df_s["P&D"].sum()
-inc_total = df_c["Incentivo"].sum()
-roi = pnd_add/inc_total if inc_total > 0 else 0
+# KPIs SUPERIORES
+pd_total_adicional = df_firma_com["P&D"].sum() - df_firma_sem["P&D"].sum()
+custo_total_incentivo = df_firma_com["Incentivo"].sum()
+roi_global = pd_total_adicional / custo_total_incentivo if custo_total_incentivo > 0 else 0
 
-# DASHBOARD
-st.title("Simulador RETI - Governança SPE/MF")
-tab1, tab2, tab3 = st.tabs(["📈 Firma", "🏛️ Fiscal", "🔍 Diagnóstico"])
+st.title("🚀 RETI: Dashboard de Suporte à Decisão Estratégica")
 
-with tab1:
-    st.subheader("Impacto Microeconômico")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("P&D Adicional (Acum)", f"R$ {pnd_add:.2f}M")
-    c2.metric("Incentivo Total", f"R$ {inc_total:.2f}M")
-    c3.metric("ROI (Adicionalidade)", f"{roi:.2f}x")
+# PAINEL DE RISCOS E PERFORMANCE
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("ROI (Adicionalidade)", f"{roi_global:.2f}x", delta="Eficiente" if roi_global > 1 else "Sub-ótimo")
+c2.metric("Incentivo Acumulado (Firma)", f"R$ {custo_total_incentivo:.1f}M")
+c3.metric("Estoque de Crédito Final", f"R$ {df_firma_com['Estoque Crédito'].iloc[-1]:.1f}M")
+c4.metric("Status Safe-Stop", "Ativo" if df_macro["M_Efetivo"].iloc[-1] < s_m else "Inativo")
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_c["Ano"], y=df_c["P&D"], name="Com RETI"))
-    fig.add_trace(go.Scatter(x=df_s["Ano"], y=df_s["P&D"], name="Sem RETI"))
-    fig.update_layout(title="Investimento em P&D (Firma)", xaxis_title="Ano", yaxis_title="R$ MM")
-    st.plotly_chart(fig, use_container_width=True)
-    st.dataframe(df_c.style.format(precision=2))
+st.divider()
 
-with tab2:
-    st.subheader("Impacto Fiscal Agregado")
-    fig2 = go.Figure()
-    fig2.add_trace(go.Bar(x=df_m["Ano"], y=df_m["P&D"], name="P&D Total (Bi)"))
-    fig2.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia"], name="Renúncia (Bi)"))
-    fig2.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Estoque"], name="Estoque Crédito (Bi)", line=dict(dash="dot")))
-    fig2.update_layout(title="Fluxo Fiscal do Programa", yaxis_title="R$ Bilhões")
-    st.plotly_chart(fig2, use_container_width=True)
+# ABAS DETALHADAS
+t1, t2, t3, t4 = st.tabs(["📈 Análise da Firma", "🏛️ Impacto Fiscal Macro", "🔍 Sensibilidade e Estresse", "📋 Tabela de Dados"])
 
-with tab3:
-    st.subheader("Diagnóstico de Sustentabilidade")
-    ren_sum = df_m["Renúncia"].sum()
-    ret_sum = df_m["Retorno"].sum()
-    st.markdown(f"""
-- **ROI Fiscal (Retorno/Renúncia):** {ret_sum/ren_sum:.2f}x
-- **Estoque Final de Créditos:** R$ {df_m["Estoque"].iloc[-1]:.2f} Bi
-- **Multiplicador ao Final do Período:** {df_m["M_Efetivo"].iloc[-1]:.2f}
+with t1:
+    col_f1, col_f2 = st.columns([2, 1])
+    with col_f1:
+        fig_pd = go.Figure()
+        fig_pd.add_trace(go.Scatter(x=df_firma_com["Ano"], y=df_firma_com["P&D"], name="Com RETI", line=dict(width=4, color="blue")))
+        fig_pd.add_trace(go.Scatter(x=df_firma_sem["Ano"], y=df_firma_sem["P&D"], name="Sem RETI (Baseline)", line=dict(dash="dot", color="red")))
+        fig_pd.update_layout(title="Investimento em P&D ao longo do tempo (R$ MM)", hovermode="x unified")
+        st.plotly_chart(fig_pd, use_container_width=True)
+    with col_f2:
+        st.write("**Composição do Incentivo**")
+        fig_inc = px.bar(df_firma_com, x="Ano", y=["Incentivo", "Estoque Crédito"], barmode="group", color_discrete_sequence=["#00CC96", "#AB63FA"])
+        st.plotly_chart(fig_inc, use_container_width=True)
 
-**Notas de Revisão:**
-1. **Prescrição:** O estoque de crédito agora expira após 5 anos (Lógica FIFO).
-2. **Gatilho:** O uso do crédito é travado se o crescimento for inferior a 10% (visível no Ano 4+).
-3. **Safe-Stop:** O multiplicador diminuiu se a renúncia macro excedeu R$ 2,2 Bi.
-4. **Fator F:** Normalizado para a tabela de faturamento do Word.
-""")
+with t2:
+    col_m1, col_m2 = st.columns([2, 1])
+    with col_m1:
+        fig_macro = go.Figure()
+        fig_macro.add_trace(go.Bar(x=df_macro["Ano"], y=df_macro["Renúncia"], name="Renúncia Anual (Bi)"))
+        fig_macro.add_trace(go.Scatter(x=df_macro["Ano"], y=df_macro["M_Efetivo"], name="Multiplicador (M)", yaxis="y2", line=dict(color="orange")))
+        fig_macro.update_layout(title="Impacto Fiscal Nacional vs. Ajuste de Multiplicador", 
+                               yaxis_title="R$ Bilhões", yaxis2=dict(title="Valor de M", overlaying="y", side="right"))
+        st.plotly_chart(fig_macro, use_container_width=True)
+    with col_m2:
+        st.write("**Retorno ao Tesouro (Indireto)**")
+        st.info("O retorno socioeconômico acumulado ao final de 10 anos é estimado em R$ {:.2f} Bilhões.".format(df_macro["Retorno Acum"].iloc[-1]))
+        st.progress(min(1.0, roi_global/2))
+
+with t3:
+    st.subheader("Análise de Estresse: Variação da Elasticidade")
+    st.write("Como o ROI do programa se comporta se a resposta das empresas for menor que o esperado?")
+    curva_e = []
+    for test_e in np.linspace(-0.2, -2.0, 10):
+        d_c = simular_unidade(s_rec, s_i, s_g, test_e, s_m, s_anos)
+        d_s = simular_unidade(s_rec, s_i, s_g, test_e, s_m, s_anos, sem_reti=True)
+        r = (d_c["P&D"].sum() - d_s["P&D"].sum()) / d_c["Incentivo"].sum() if d_c["Incentivo"].sum() > 0 else 0
+        curva_e.append([test_e, r])
+    df_e = pd.DataFrame(curva_e, columns=["Elasticidade", "ROI"])
+    fig_e = px.line(df_e, x="Elasticidade", y="ROI", markers=True, title="ROI vs Elasticidade-Custo")
+    fig_e.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="Break-even (ROI=1)")
+    st.plotly_chart(fig_e, use_container_width=True)
+
+with t4:
+    st.subheader("Dados Brutos da Simulação (Unidade)")
+    st.dataframe(df_firma_com.style.format(precision=2).highlight_max(subset=["P&D", "Incentivo"], color="#D4EFDF"))
+
+# NOTA DE RODAPÉ TÉCNICA
+st.caption(f"Simulador atualizado com regras de prescrição quinquenal, trava de performance (Ano 3+) e Safe-Stop fiscal (R$ 2.2 Bi). Elasticidade baseada em Kannebley Jr. et al (2016).")
