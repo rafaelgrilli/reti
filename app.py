@@ -4,7 +4,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # =========================================================
-# 1. FUNÇÕES CORE
+# 1. FUNÇÃO FATOR F
 # =========================================================
 
 def fator_f_unificado(r_mm, intensidade):
@@ -20,7 +20,7 @@ def fator_f_unificado(r_mm, intensidade):
         else: return max(1.0, 1.5 - 0.004 * (r_mm - 78.0))
 
 # =========================================================
-# 2. MOTOR MICRO (COM CORREÇÃO DE SOBREVIVÊNCIA)
+# 2. MOTOR MICRO COMPLETO
 # =========================================================
 
 def simular_micro(p, sem_reti=False, seed=42):
@@ -29,36 +29,28 @@ def simular_micro(p, sem_reti=False, seed=42):
 
     n = p['n_empresas']
 
-    # Inicialização
     mu = np.log(p['rec_media_mm']) - (0.8**2 / 2)
     receitas = np.random.lognormal(mu, 0.8, n) * 1e6
     intensidades = np.clip(np.random.normal(p['intensidade_pnd'], 0.03, n), 0.01, 0.4)
 
     estoque_pnd = np.zeros(n)
     historico_pnd = [np.zeros(n) for _ in range(3)]
-
     estoque_credito = [np.zeros(n) for _ in range(5)]
 
     anual = []
 
     for ano in range(1, p['anos'] + 1):
 
-        # -------------------------------------------------
-        # DEMOGRAFIA (ENTRADA + SAÍDA) — FIX DO BUG
-        # -------------------------------------------------
-
+        # ---------------- DEMOGRAFIA ----------------
         prob_saida = np.clip(0.05 - 0.02 * (intensidades / 0.1), 0.01, 0.08)
         sobrevivencia = np.random.rand(len(receitas)) > prob_saida
 
-        # ✔ FIX: aplicar máscara em TODOS vetores
         receitas = receitas[sobrevivencia]
         intensidades = intensidades[sobrevivencia]
         estoque_pnd = estoque_pnd[sobrevivencia]
-
         historico_pnd = [h[sobrevivencia] for h in historico_pnd]
         estoque_credito = [e[sobrevivencia] for e in estoque_credito]
 
-        # Entrada
         taxa_entrada = p['taxa_entrada_liq'] + (0 if sem_reti else p['bonus_entrada_reti'])
         n_novas = int(len(receitas) * taxa_entrada)
 
@@ -70,33 +62,21 @@ def simular_micro(p, sem_reti=False, seed=42):
             intensidades = np.concatenate([intensidades, novas_int])
 
             estoque_pnd = np.concatenate([estoque_pnd, np.zeros(n_novas)])
-
             historico_pnd = [np.concatenate([h, np.zeros(n_novas)]) for h in historico_pnd]
             estoque_credito = [np.concatenate([e, np.zeros(n_novas)]) for e in estoque_credito]
 
-        # -------------------------------------------------
-        # PRODUTIVIDADE COM LAG
-        # -------------------------------------------------
-
+        # ---------------- PRODUTIVIDADE ----------------
         est_def = historico_pnd[0]
         ajuste = p['e_ptf'] * np.log(1 + est_def / (receitas + 1))
         ajuste = np.minimum(ajuste, 0.05)
 
         g = p['taxa_g_base'] + (0 if sem_reti else ajuste)
-
         receitas *= (1 + g)
 
         pnd_base = receitas * intensidades
 
-        # -------------------------------------------------
-        # ELASTICIDADE
-        # -------------------------------------------------
-
+        # ---------------- ELASTICIDADE ----------------
         elasticidade = p['e_custo'] * (1 + p['alpha_het'] * (np.mean(receitas)/(receitas+1)))
-
-        # -------------------------------------------------
-        # RETI
-        # -------------------------------------------------
 
         fatores = np.array([fator_f_unificado(r/1e6, i) for r,i in zip(receitas,intensidades)])
 
@@ -104,9 +84,9 @@ def simular_micro(p, sem_reti=False, seed=42):
             pnd_total = pnd_base
             renuncia = 0
             bf_total = 0
+            delta = np.zeros_like(pnd_base)
         else:
             custo = p['multiplicador'] * fatores * 0.34
-
             delta = pnd_base * np.abs(elasticidade) * custo
             pnd_total = pnd_base + delta
 
@@ -115,7 +95,6 @@ def simular_micro(p, sem_reti=False, seed=42):
             historico_pnd.pop(0)
             historico_pnd.append(delta.copy())
 
-            # Fiscal
             imp_ref = receitas * 0.32 * 0.34
             ded = p['multiplicador'] * pnd_total * fatores * 0.34
 
@@ -148,6 +127,18 @@ def simular_micro(p, sem_reti=False, seed=42):
                 p['s_cons']*p['a_cons']
             )
 
+        # snapshot micro no último ano
+        if ano == p['anos']:
+            micro_df = pd.DataFrame({
+                "receita": receitas,
+                "intensidade": intensidades,
+                "pnd": pnd_total,
+                "pnd_base": pnd_base,
+                "delta_pnd": delta,
+                "fator_f": fatores,
+                "elasticidade": elasticidade
+            })
+
         anual.append({
             "Ano": ano,
             "Renuncia_Bi": renuncia/1e9,
@@ -157,10 +148,10 @@ def simular_micro(p, sem_reti=False, seed=42):
             "N": len(receitas)
         })
 
-    return pd.DataFrame(anual)
+    return pd.DataFrame(anual), micro_df
 
 # =========================================================
-# 3. SIDEBAR (TOTAL CONTROLE RESTAURADO)
+# 3. SIDEBAR
 # =========================================================
 
 st.sidebar.title("🏛️ Parâmetros")
@@ -182,20 +173,14 @@ p = {
 }
 
 # =========================================================
-# 4. MONTE CARLO (SEM QUEBRAR UX)
+# 4. SIMULAÇÃO
 # =========================================================
 
-def rodar_mc(p, n_sim=20):
-    sims = []
-    for s in range(n_sim):
-        sims.append(simular_micro(p, False, seed=s))
-    return pd.concat(sims).groupby("Ano").mean().reset_index()
-
-df_com = rodar_mc(p)
-df_sem = simular_micro(p, True)
+df_com, micro = simular_micro(p, False)
+df_sem, micro_sem = simular_micro(p, True)
 
 # =========================================================
-# 5. KPIs SPE
+# 5. KPIs
 # =========================================================
 
 delta = (df_com["PND_Bi"] - df_sem["PND_Bi"]).sum()
@@ -207,22 +192,48 @@ npv_ren = (df_com["Renuncia_Bi"]*df_com["desc"]).sum()
 npv_bf = (df_com["BF_Bi"]*df_com["desc"]).sum()
 
 # =========================================================
-# 6. DASHBOARD
+# 6. DASHBOARD MACRO
 # =========================================================
 
-st.title("📊 RETI — Simulador Fiscal")
+st.title("📊 RETI — Simulador Completo")
 
 c1,c2,c3,c4 = st.columns(4)
-
 c1.metric("Δ P&D",f"{delta:.1f} Bi")
 c2.metric("Elasticidade",f"{delta/ren:.2f}x")
 c3.metric("NPV Líquido",f"{npv_bf-npv_ren:.1f} Bi")
 c4.metric("Passivo",f"{df_com['Passivo_Bi'].iloc[-1]:.1f} Bi")
 
 fig = go.Figure()
-
 fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["Renuncia_Bi"],name="Renúncia"))
 fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["BF_Bi"],name="Backflow"))
 fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["Passivo_Bi"],name="Passivo"))
-
 st.plotly_chart(fig, use_container_width=True)
+
+# =========================================================
+# 7. MICRO / DISTRIBUIÇÃO
+# =========================================================
+
+st.subheader("Distribuição Δ P&D")
+fig2 = go.Figure()
+fig2.add_trace(go.Histogram(x=micro["delta_pnd"], nbinsx=50))
+st.plotly_chart(fig2, use_container_width=True)
+
+# porte
+micro["porte"] = pd.qcut(micro["receita"], 5, labels=False)
+porte = micro.groupby("porte")["delta_pnd"].mean()
+
+fig3 = go.Figure()
+fig3.add_trace(go.Bar(x=porte.index, y=porte.values))
+st.plotly_chart(fig3, use_container_width=True)
+
+# eficiência
+micro["beneficio"] = micro["pnd"] * micro["fator_f"] * 0.34
+micro["eficiencia"] = micro["delta_pnd"] / (micro["beneficio"] + 1e-6)
+
+fig4 = go.Figure()
+fig4.add_trace(go.Scatter(x=micro["receita"], y=micro["eficiencia"], mode="markers", opacity=0.4))
+st.plotly_chart(fig4, use_container_width=True)
+
+# deadweight
+deadweight = micro["beneficio"].sum() - micro["delta_pnd"].sum()
+st.metric("Deadweight Loss", f"{deadweight/1e9:.2f} Bi")
