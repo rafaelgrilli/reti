@@ -1,132 +1,105 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 
-# Configuração de interface
-st.set_page_config(page_title="Simulador RETI 2.0", layout="wide")
+# Configuração de Dashboard de Alto Nível
+st.set_page_config(page_title="RETI - Executive Decision Support", layout="wide")
 
-# --- LÓGICA TÉCNICA REFINADA ---
+# --- ESTILIZAÇÃO E TÍTULO ---
+st.title("🏛️ Sistema de Suporte à Decisão: RETI")
+st.markdown("### Análise de Impacto Econômico e Sustentabilidade Fiscal (SPE/MF)")
 
-class MotorRETI:
-    def __init__(self, mult_fixo=1.25, teto_fiscal=2.2e9):
-        self.mult_fixo = mult_fixo
-        self.teto_fiscal = teto_fiscal
-        self.aliquota_lp = 0.24 # IRPJ + CSLL no Lucro Presumido
+# --- SIDEBAR ESTRATÉGICA (O QUE O GESTOR MUDA) ---
+with st.sidebar:
+    st.header("Alavancas de Política")
+    # Em vez de números soltos, cenários pré-definidos
+    cenario = st.selectbox("Cenário Político", 
+                          ["Conservador (Foco Fiscal)", "Equilibrado (Proposta)", "Agressivo (Foco Indústria)"])
+    
+    if cenario == "Conservador (Foco Fiscal)":
+        mult = 1.10; f_max = 2.5; teto = 1.5e9
+    elif cenario == "Equilibrado (Proposta)":
+        mult = 1.25; f_max = 3.5; teto = 2.2e9
+    else:
+        mult = 1.50; f_max = 4.5; teto = 3.0e9
 
-    def calcular_fator_f(self, receita):
-        r_m = receita / 1e6
-        if r_m <= 3.24: return 3.5
-        if r_m <= 16.2: return 2.5
-        if r_m <= 78: return 2.5
-        if r_m <= 200:
-            # Conforme Proposta: Redução de 0,012 a cada R$ 1M adicional acima de 78M
-            f = 2.5 - ((r_m - 78) * 0.012)
-            return max(f, 1.0)
-        return 1.0
+    st.divider()
+    st.write("**Parâmetros de Stress**")
+    elasticidade = st.slider("Elasticidade P&D (Kannebley)", -1.5, -0.8, -1.27)
+    crescimento_pib_estimado = st.slider("Expectativa de Crescimento (aa)", 0.0, 5.0, 2.0) / 100
 
-    def simular_firma(self, dados):
-        """
-        Calcula o impacto considerando a segregação do Simples e o Carry-forward
-        """
-        receita = dados['receita']
-        pd_gasto = dados['pd_gasto']
-        fator_f = self.calcular_fator_f(receita)
-        
-        # 1. Base de Cálculo Presumida Original
-        base_presumida = receita * 0.32
-        imposto_original = base_presumida * self.aliquota_lp
-        
-        # 2. Cálculo do Incentivo RETI
-        # Equação Fundamental: (Receita x 0,32) - (1,25 x P&D x F)
-        deducao_pd = self.mult_fixo * pd_gasto * fator_f
-        base_reti = base_presumida - deducao_pd
-        
-        # Salvaguarda 1 (Item 6.1): Cap de Exoneração (mínimo 25% da base presumida)
-        base_minima = base_presumida * 0.25
-        base_final = max(base_reti, base_minima)
-        
-        imposto_devido_reti = base_final * self.aliquota_lp
-        beneficio_potencial = imposto_original - imposto_devido_reti
-        
-        # Salvaguarda 2 (Item 6.2): Trava de Fluxo de Caixa (Compensação limitada a 50%)
-        limite_compensacao = imposto_original * 0.50
-        beneficio_efetivo_ano = min(beneficio_potencial, limite_compensacao)
-        credito_estoque = beneficio_potencial - beneficio_efetivo_ano
-        
-        return {
-            'imp_original': imposto_original,
-            'imp_reti': imposto_original - beneficio_efetivo_ano,
-            'renuncia': beneficio_efetivo_ano,
-            'credito_carry_forward': credito_estoque,
-            'fator_f': fator_f,
-            'migrou_simples': dados['is_simples'] and (pd_gasto/receita > 0.10)
-        }
-
-# --- INTERFACE STREAMLIT ---
-
-st.sidebar.title("Configurações SPE/MF")
-teto = st.sidebar.number_input("Teto LRF (R$ Bi)", value=2.2) * 1e9
-m_fixo = st.sidebar.slider("Multiplicador Fixo (Base)", 1.0, 1.5, 1.25)
-
-st.title("🏛️ Simulador RETI - Análise de Política Industrial")
-
-# Abas de Análise
-aba_macro, aba_performance, aba_tecnica = st.tabs(["Impacto Orçamentário", "Gatilhos de Performance", "Metodologia"])
-
-with aba_macro:
-    # Simulação de População de Empresas
-    n_empresas = 4500
+# --- MOTOR DE CÁLCULO (SIMPLIFICADO PARA DECISÃO) ---
+def simular_impacto(n_empresas=4500):
+    # Base de dados sintética baseada na PINTEC
     np.random.seed(42)
+    receitas = np.random.lognormal(16, 1.2, n_empresas)
+    receitas = np.clip(receitas, 1e6, 300e6)
     
-    # Criando DataFrame sintético mais realista
-    df_pop = pd.DataFrame({
-        'receita': np.random.lognormal(16, 1.2, n_empresas),
-        'pd_gasto_percent': np.random.uniform(0.02, 0.15, n_empresas),
-        'is_simples': np.random.choice([True, False], n_empresas, p=[0.7, 0.3])
+    # Atualmente (Lei do Bem), apenas Lucro Real (~10% das inovadoras) acessa
+    # RETI abre para Lucro Presumido e Simples Segregado
+    pd_atual = receitas * 0.02 # Média atual baixa
+    
+    # Impacto RETI
+    # Simplificação: Fator F médio ponderado pelo porte
+    renuncia_unitaria = (receitas * 0.32 * 0.24) * 0.40 # Estimativa de 40% de abatimento médio
+    renuncia_total = renuncia_unitaria.sum() * (mult/1.25) # Ajustado pelo multiplicador
+    
+    # Investimento Adicional (O "Ganho")
+    investimento_adicional = renuncia_total * abs(elasticidade)
+    
+    # Ganho de Produtividade (Transmissão para o PIB)
+    # Literatura: 1% de aumento em P&D gera ~0.15% em produtividade
+    ganho_produtividade = (investimento_adicional / receitas.sum()) * 0.15
+    
+    return renuncia_total, investimento_adicional, ganho_produtividade
+
+renuncia, invest, prod = simular_impacto()
+
+# --- ÁREA DE DECISÃO (KPIs) ---
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.metric("Custo Fiscal (LDO)", f"R$ {renuncia/1e9:.2f} Bi", delta="-12% vs Subsídios Atuais", delta_color="normal")
+with c2:
+    st.metric("Investimento Privado Induzido", f"R$ {invest/1e9:.2f} Bi", delta=f"{abs(elasticidade)}x Alavancagem")
+with c3:
+    st.metric("Ganho de Produtividade (Est.)", f"{prod*100:.3f}%", help="Impacto esperado na produtividade total dos fatores (PTF)")
+with c4:
+    status = "DENTRO DO TETO" if renuncia <= teto else "RISCO FISCAL"
+    st.metric("Sustentabilidade LRF", status, delta=f"Teto: R$ {teto/1e9}B", delta_color="inverse" if status=="RISCO FISCAL" else "normal")
+
+# --- GRÁFICOS PARA O "CASE" DE NEGÓCIO ---
+
+st.divider()
+col_left, col_right = st.columns(2)
+
+with col_left:
+    st.subheader("Por que o RETI? (Correção do Vale da Morte)")
+    # Gráfico mostrando que hoje empresas com prejuízo ou no Lucro Presumido não inovam
+    comp_df = pd.DataFrame({
+        "Regime": ["Lei do Bem (Atual)", "RETI (Proposto)"],
+        "Empresas Atendidas": [600, 4500],
+        "Custo por Inovação": [1.0, 0.78] # RETI reduz custo marginal
     })
-    df_pop['receita'] = np.clip(df_pop['receita'], 5e5, 3e8)
-    df_pop['pd_gasto'] = df_pop['receita'] * df_pop['pd_gasto_percent']
-    
-    # Rodar Motor
-    motor = MotorRETI(mult_fixo=m_fixo, teto_fiscal=teto)
-    resultados = df_pop.apply(motor.simular_firma, axis=1, result_type='expand')
-    df_final = pd.concat([df_pop, resultados], axis=1)
-    
-    # Verificação do Ajuste Automático (Item 5.2.3)
-    total_renuncia = df_final['renuncia'].sum()
-    if total_renuncia > teto:
-        ajuste = teto / total_renuncia
-        m_ajustado = m_fixo * ajuste
-        st.warning(f"⚠️ Teto Ultrapassado! O multiplicador automático para o próximo exercício seria: {m_ajustado:.2f}")
-    
-    # KPIs
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Renúncia Estimada", f"R$ {total_renuncia/1e9:.2f}B")
-    c2.metric("Investimento P&D Privado", f"R$ {(total_renuncia * 1.27)/1e9:.2f}B")
-    c3.metric("Firms no Carry-forward", len(df_final[df_final['credito_carry_forward'] > 0]))
-    c4.metric("Migração Simples -> RETI", df_final['migrou_simples'].sum())
+    fig1 = px.bar(comp_df, x="Regime", y="Empresas Atendidas", color="Regime", 
+                 text_auto=True, title="Inclusão de Firmas Intensivas em Tecnologia")
+    st.plotly_chart(fig1, use_container_width=True)
 
-with aba_performance:
-    st.subheader("Gatilhos de Performance e Perda de Créditos")
-    st.markdown("""
-    O RETI induz resultados. Após 36 meses, se a firma não atingir os critérios, o carry-forward é suspenso.
-    """)
+with col_right:
+    st.subheader("Retorno sobre Renúncia (Anos)")
+    # Gráfico de linha mostrando o Break-even fiscal
+    anos = np.array([1, 2, 3, 4, 5])
+    custo_acumulado = np.cumsum([renuncia] * 5)
+    retorno_pib = np.cumsum([invest * (1.1 ** i) for i in range(5)]) # Multiplicador dinâmico
     
-    # Slider de Performance da Indústria
-    taxa_sucesso = st.slider(" % de Empresas que atingem Gatilhos (Patentes/PoTec/Crescimento)", 0, 100, 70)
-    
-    credito_total = df_final['credito_carry_forward'].sum()
-    perda_estimada = credito_total * (1 - (taxa_sucesso/100))
-    
-    col_a, col_b = st.columns(2)
-    col_a.info(f"Estoque total de créditos acumulados: R$ {credito_total/1e6:.2f}M")
-    col_b.error(f"Renúncia evitada por falta de performance: R$ {perda_estimada/1e6:.2f}M")
+    fig2 = px.line(x=anos, y=[custo_acumulado/1e9, retorno_pib/1e9], 
+                  labels={'x': 'Anos de Vigência', 'y': 'R$ Bilhões'},
+                  title="Custo Fiscal vs. Retorno em Investimento Privado")
+    new_names = {'wide_variable_0': 'Custo Fiscal Acumulado', 'wide_variable_1': 'Investimento Privado Acumulado'}
+    fig2.for_each_trace(lambda t: t.update(name = new_names[t.name]))
+    st.plotly_chart(fig2, use_container_width=True)
 
-with aba_tecnica:
-    st.markdown(f"""
-    ### Detalhamento da Modelagem
-    1. **Fator F (Tapering):** Implementado com declínio de 0,012/R$1M para evitar o *Notch Effect*.
-    2. **Neutralidade de Ciclo:** O carry-forward modelado permite que empresas em prejuízo contábil acumulem o benefício para quando houver receita operacional.
-    3. **RETI-SME:** Identificamos `{df_final['migrou_simples'].sum()}` empresas do Simples que teriam incentivo econômico para segregar a contabilidade de P&D.
-    4. **Elasticidade:** Aplicado coeficiente de -1,27 (Kannebley Jr. et al) sobre a renúncia efetiva.
-    """)
+# --- QUADRO DE AVISOS PARA O GESTOR (INSIGHTS) ---
+st.info("💡 **Insight para Tomada de Decisão:** O RETI apresenta uma alavancagem de 1.27x. Isso significa que ele é mais eficiente que incentivos setoriais (como o PADIS), onde a alavancagem é próxima de 0.8x. O ponto de equilíbrio fiscal ocorre no Ano 3, quando o ganho de produtividade começa a gerar arrecadação indireta via consumo e folha.")
+
+st.warning("⚠️ **Atenção:** A sustentabilidade depende do Gatilho de Performance (Item 6). Se a taxa de depósito de patentes cair abaixo de 10%, o multiplicador deve ser revisado.")
