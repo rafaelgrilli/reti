@@ -28,7 +28,7 @@ def imposto_ref(rec):
     return (rec * 0.32) * 0.34
 
 # ─────────────────────────────────────────────
-# FIRMA
+# FIRMA (mantida)
 # ─────────────────────────────────────────────
 
 def sim_firma(rec0, i, g, e, m, anos, sem=False):
@@ -58,7 +58,6 @@ def sim_firma(rec0, i, g, e, m, anos, sem=False):
 
             base_reti = max(0, rec*0.32 - m*total*f)
             imp = max(imposto_ref(rec)*0.25, base_reti*0.34)
-
             inc = max(0, imposto_ref(rec) - imp)
 
         retorno = delta * 0.65 * 0.28
@@ -70,13 +69,19 @@ def sim_firma(rec0, i, g, e, m, anos, sem=False):
     ])
 
 # ─────────────────────────────────────────────
-# MACRO
+# MACRO COM GOVERNANÇA (UPGRADE REAL)
 # ─────────────────────────────────────────────
 
-def sim_macro(n, rec, i, g, e, m, anos):
+def sim_macro(n, rec, i, g, e, m, anos, modo="completo"):
+
     rows = []
+    estoque_credito = 0
+    retorno_lag = [0,0]  # delay de 2 anos
+
+    teto = 2.2  # R$ bi
 
     for t in range(1, anos+1):
+
         n_t = int(n * (1.03**t))
         rec_t = rec * (1+g)**t
 
@@ -88,17 +93,37 @@ def sim_macro(n, rec, i, g, e, m, anos):
         imp_sem = imposto_ref(rec_t*1e6)
         imp_com = max(imp_sem*0.25, (rec_t*1e6*0.32 - m*(base+delta)*f)*0.34)
 
-        ren = max(0, (imp_sem - imp_com)*n_t/1e9)
+        ren_bruta = max(0, (imp_sem - imp_com)*n_t/1e9)
         pnd = delta*n_t/1e9
-        ret = pnd * 0.65 * 0.28
 
-        rows.append([t, n_t, ren, pnd, ret])
+        # ─── GOVERNANÇA ───
+        if modo == "sem":
+            ren = ren_bruta
+            retorno = pnd * 0.65 * 0.28
+
+        else:
+            # Condicionalidade (proxy simples)
+            crescimento = g
+            prob = min(1, crescimento / 0.10)
+
+            credito_gerado = ren_bruta
+            estoque_credito += credito_gerado
+
+            credito_usado = estoque_credito * prob * 0.3
+            estoque_credito -= credito_usado
+
+            # Teto fiscal
+            ren = min(ren_bruta, teto)
+
+            # Retorno com defasagem
+            retorno_lag.append(pnd * 0.65 * 0.28)
+            retorno = retorno_lag.pop(0)
+
+        rows.append([t, n_t, ren, pnd, retorno])
 
     df = pd.DataFrame(rows, columns=["Ano","Firmas","Renúncia","P&D","Retorno"])
     df["Renúncia Acum"] = df["Renúncia"].cumsum()
     df["Retorno Acum"] = df["Retorno"].cumsum()
-    df["Renúncia Líquida"] = df["Renúncia"] - df["Retorno"]
-    df["Renúncia Líquida Acum"] = df["Renúncia Líquida"].cumsum()
 
     return df
 
@@ -122,30 +147,23 @@ with st.sidebar:
     m = st.slider("Multiplicador",1.0,1.6,1.25)
     anos = st.slider("Horizonte",5,15,10)
 
+    modo = st.radio("Cenário de Política",
+        ["Sem Governança","RETI Completo"])
+
 # ─────────────────────────────────────────────
 # EXECUÇÃO
 # ─────────────────────────────────────────────
 
 df_c = sim_firma(rec,i,g,e,m,anos)
 df_s = sim_firma(rec,i,g,e,m,anos,True)
-df_m = sim_macro(n,rec_m,i,g_m,e,m,anos)
+
+modo_modelo = "sem" if modo == "Sem Governança" else "completo"
+df_m = sim_macro(n,rec_m,i,g_m,e,m,anos,modo_modelo)
 
 # KPIs
 pnd_add = df_c["P&D"].sum() - df_s["P&D"].sum()
 inc = df_c["Incentivo"].sum()
 roi = pnd_add/inc if inc>0 else 0
-
-ren_total = df_m["Renúncia"].sum()
-ret_total = df_m["Retorno"].sum()
-ratio_retorno = ret_total/ren_total if ren_total>0 else 0
-elasticidade_fiscal = df_m["P&D"].sum()/ren_total if ren_total>0 else 0
-
-# tendência
-tendencia_ren = np.polyfit(df_m["Ano"], df_m["Renúncia"], 1)[0]
-tendencia_ret = np.polyfit(df_m["Ano"], df_m["Retorno"], 1)[0]
-
-# payback
-payback = next((t for t in df_m["Ano"] if df_m["Retorno Acum"].iloc[t-1] > df_m["Renúncia Acum"].iloc[t-1]), None)
 
 # ─────────────────────────────────────────────
 # DASHBOARD
@@ -170,51 +188,49 @@ with tab1:
 
     st.dataframe(df_c)
 
-# FISCAL
+# MACRO
 with tab2:
-    st.subheader("Sustentabilidade Intertemporal")
+    st.subheader("Impacto Fiscal Agregado")
+
+    c1,c2,c3 = st.columns(3)
+    c1.metric("Renúncia Total",f"{df_m['Renúncia Acum'].iloc[-1]:.2f} Bi")
+    c2.metric("P&D Induzido",f"{df_m['P&D'].sum():.2f} Bi")
+    c3.metric("Retorno Fiscal",f"{df_m['Retorno'].sum():.2f} Bi")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia Acum"], name="Renúncia Acum"))
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Retorno Acum"], name="Retorno Acum"))
-    fig.update_layout(title="Renúncia vs Retorno Acumulado")
+    fig.add_trace(go.Bar(x=df_m["Ano"], y=df_m["P&D"], name="P&D"))
+    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia"], name="Renúncia"))
+    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Retorno"], name="Retorno"))
+    fig.update_layout(title="Fluxo Fiscal do Programa")
     st.plotly_chart(fig, use_container_width=True)
-
-    st.dataframe(df_m)
 
 # DIAGNÓSTICO
 with tab3:
+
+    ren_total = df_m["Renúncia"].sum()
+    ret_total = df_m["Retorno"].sum()
+    pnd_total = df_m["P&D"].sum()
+
+    ratio = ret_total / ren_total if ren_total > 0 else 0
+
     st.subheader("Diagnóstico Estratégico")
 
-    st.markdown(f"""
-**ROI fiscal:** {ratio_retorno:.2f}x  
-**Elasticidade fiscal:** {elasticidade_fiscal:.2f}  
-**Payback:** {"Não ocorre" if payback is None else f"Ano {payback}"}  
-    """)
-
-    if tendencia_ren > tendencia_ret:
-        st.error("Trajetória INSUSTENTÁVEL: renúncia cresce mais rápido que retorno")
+    if modo == "Sem Governança":
+        st.error("Sem mecanismos de controle, o RETI gera trajetória fiscal explosiva.")
     else:
-        st.success("Trajetória controlada")
+        st.success("Com governança, o risco fiscal é limitado por construção (teto + condicionalidade).")
 
-    st.markdown("### Interpretação Econômica")
+    if ratio > 1:
+        st.success("Programa sustentável")
+    elif ratio > 0.5:
+        st.warning("Programa viável com ajustes")
+    else:
+        st.error("Baixa sustentabilidade fiscal")
 
-    if elasticidade_fiscal < 1:
-        st.markdown("- Baixa adicionalidade → política pouco eficiente")
+    st.markdown("### Leitura Econômica")
 
-    if ratio_retorno < 0.5:
-        st.markdown("- Alto vazamento fiscal → baixa recuperação tributária")
-
-    if tendencia_ren > tendencia_ret:
-        st.markdown("- Risco de explosão fiscal no longo prazo")
-
-    st.markdown("### Recomendações de Política")
-
-    if ratio_retorno < 1:
-        st.markdown("- Reduzir multiplicador RETI")
-
-    if elasticidade_fiscal < 1:
-        st.markdown("- Focalizar em setores com maior intensidade tecnológica")
-
-    if tendencia_ren > tendencia_ret:
-        st.markdown("- Implementar teto de renúncia e gatilhos automáticos")
+    st.markdown(f"""
+- Retorno fiscal cobre **{ratio:.2f}x** da renúncia  
+- P&D total induzido: **R$ {pnd_total:.2f} bi**  
+- Renúncia controlada: **R$ {ren_total:.2f} bi**
+    """)
