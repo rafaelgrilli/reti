@@ -28,7 +28,7 @@ def imposto_ref(rec):
     return (rec * 0.32) * 0.34
 
 # ─────────────────────────────────────────────
-# FIRMA (mantida)
+# FIRMA
 # ─────────────────────────────────────────────
 
 def sim_firma(rec0, i, g, e, m, anos, sem=False):
@@ -58,6 +58,7 @@ def sim_firma(rec0, i, g, e, m, anos, sem=False):
 
             base_reti = max(0, rec*0.32 - m*total*f)
             imp = max(imposto_ref(rec)*0.25, base_reti*0.34)
+
             inc = max(0, imposto_ref(rec) - imp)
 
         retorno = delta * 0.65 * 0.28
@@ -69,19 +70,14 @@ def sim_firma(rec0, i, g, e, m, anos, sem=False):
     ])
 
 # ─────────────────────────────────────────────
-# MACRO COM GOVERNANÇA (UPGRADE REAL)
+# MACRO COM GOVERNANÇA (VERSÃO CORRIGIDA)
 # ─────────────────────────────────────────────
 
-def sim_macro(n, rec, i, g, e, m, anos, modo="completo"):
-
+def sim_macro(n, rec, i, g, e, m, anos, cap_anual=2.2, gatilho=True):
     rows = []
-    estoque_credito = 0
-    retorno_lag = [0,0]  # delay de 2 anos
-
-    teto = 2.2  # R$ bi
+    ren_acum = 0
 
     for t in range(1, anos+1):
-
         n_t = int(n * (1.03**t))
         rec_t = rec * (1+g)**t
 
@@ -95,34 +91,24 @@ def sim_macro(n, rec, i, g, e, m, anos, modo="completo"):
 
         ren_bruta = max(0, (imp_sem - imp_com)*n_t/1e9)
         pnd = delta*n_t/1e9
+        ret = pnd * 0.65 * 0.28
 
-        # ─── GOVERNANÇA ───
-        if modo == "sem":
-            ren = ren_bruta
-            retorno = pnd * 0.65 * 0.28
+        # ─── CAP FISCAL (PROPOSTA REAL)
+        ren = min(ren_bruta, cap_anual)
 
-        else:
-            # Condicionalidade (proxy simples)
-            crescimento = g
-            prob = min(1, crescimento / 0.10)
+        # ─── GATILHO AUTOMÁTICO
+        if gatilho and ren_acum > cap_anual * 3:
+            ren *= 0.85  # compressão do benefício
 
-            credito_gerado = ren_bruta
-            estoque_credito += credito_gerado
+        ren_acum += ren
 
-            credito_usado = estoque_credito * prob * 0.3
-            estoque_credito -= credito_usado
+        rows.append([t, n_t, ren, ren_bruta, pnd, ret])
 
-            # Teto fiscal
-            ren = min(ren_bruta, teto)
+    df = pd.DataFrame(rows, columns=[
+        "Ano","Firmas","Renúncia Controlada","Renúncia Bruta","P&D","Retorno"
+    ])
 
-            # Retorno com defasagem
-            retorno_lag.append(pnd * 0.65 * 0.28)
-            retorno = retorno_lag.pop(0)
-
-        rows.append([t, n_t, ren, pnd, retorno])
-
-    df = pd.DataFrame(rows, columns=["Ano","Firmas","Renúncia","P&D","Retorno"])
-    df["Renúncia Acum"] = df["Renúncia"].cumsum()
+    df["Renúncia Acum"] = df["Renúncia Controlada"].cumsum()
     df["Retorno Acum"] = df["Retorno"].cumsum()
 
     return df
@@ -146,9 +132,7 @@ with st.sidebar:
     e = st.slider("Elasticidade",-2.0,-0.5,-1.2)
     m = st.slider("Multiplicador",1.0,1.6,1.25)
     anos = st.slider("Horizonte",5,15,10)
-
-    modo = st.radio("Cenário de Política",
-        ["Sem Governança","RETI Completo"])
+    cap = st.slider("Teto anual (R$ bi)",1.0,5.0,2.2)
 
 # ─────────────────────────────────────────────
 # EXECUÇÃO
@@ -156,9 +140,7 @@ with st.sidebar:
 
 df_c = sim_firma(rec,i,g,e,m,anos)
 df_s = sim_firma(rec,i,g,e,m,anos,True)
-
-modo_modelo = "sem" if modo == "Sem Governança" else "completo"
-df_m = sim_macro(n,rec_m,i,g_m,e,m,anos,modo_modelo)
+df_m = sim_macro(n,rec_m,i,g_m,e,m,anos,cap)
 
 # KPIs
 pnd_add = df_c["P&D"].sum() - df_s["P&D"].sum()
@@ -171,7 +153,7 @@ roi = pnd_add/inc if inc>0 else 0
 
 tab1, tab2, tab3 = st.tabs(["📈 Firma","🏛️ Fiscal","🔍 Diagnóstico"])
 
-# FIRMA
+# ───────── FIRMA
 with tab1:
     st.subheader("Impacto Microeconômico")
 
@@ -188,49 +170,62 @@ with tab1:
 
     st.dataframe(df_c)
 
-# MACRO
+# ───────── MACRO
 with tab2:
-    st.subheader("Impacto Fiscal Agregado")
-
-    c1,c2,c3 = st.columns(3)
-    c1.metric("Renúncia Total",f"{df_m['Renúncia Acum'].iloc[-1]:.2f} Bi")
-    c2.metric("P&D Induzido",f"{df_m['P&D'].sum():.2f} Bi")
-    c3.metric("Retorno Fiscal",f"{df_m['Retorno'].sum():.2f} Bi")
+    st.subheader("Impacto Fiscal com Governança")
 
     fig = go.Figure()
     fig.add_trace(go.Bar(x=df_m["Ano"], y=df_m["P&D"], name="P&D"))
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia"], name="Renúncia"))
+    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia Controlada"], name="Renúncia (cap)"))
     fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Retorno"], name="Retorno"))
-    fig.update_layout(title="Fluxo Fiscal do Programa")
+    fig.update_layout(title="Fluxo Fiscal Controlado")
     st.plotly_chart(fig, use_container_width=True)
 
-# DIAGNÓSTICO
+    st.dataframe(df_m)
+
+# ───────── DIAGNÓSTICO
 with tab3:
+    st.subheader("Diagnóstico Institucional (nível SPE)")
 
-    ren_total = df_m["Renúncia"].sum()
-    ret_total = df_m["Retorno"].sum()
-    pnd_total = df_m["P&D"].sum()
+    ren = df_m["Renúncia Controlada"].sum()
+    ret = df_m["Retorno"].sum()
+    pnd = df_m["P&D"].sum()
 
-    ratio = ret_total / ren_total if ren_total > 0 else 0
+    ratio = ret/ren if ren>0 else 0
 
-    st.subheader("Diagnóstico Estratégico")
+    st.markdown("### Leitura Estrutural")
 
-    if modo == "Sem Governança":
-        st.error("Sem mecanismos de controle, o RETI gera trajetória fiscal explosiva.")
-    else:
-        st.success("Com governança, o risco fiscal é limitado por construção (teto + condicionalidade).")
+    st.write(f"• Retorno fiscal: {ratio:.2f}x")
+    st.write(f"• P&D induzido: R$ {pnd:.1f} bi")
 
-    if ratio > 1:
-        st.success("Programa sustentável")
-    elif ratio > 0.5:
-        st.warning("Programa viável com ajustes")
-    else:
-        st.error("Baixa sustentabilidade fiscal")
+    st.markdown("### Interpretação Econômica")
 
-    st.markdown("### Leitura Econômica")
+    if ratio < 0.5:
+        st.error("""
+O regime não é auto-financiável.  
+Isso não invalida o RETI — indica que ele opera como política industrial clássica,
+com custo fiscal explícito.
+""")
 
-    st.markdown(f"""
-- Retorno fiscal cobre **{ratio:.2f}x** da renúncia  
-- P&D total induzido: **R$ {pnd_total:.2f} bi**  
-- Renúncia controlada: **R$ {ren_total:.2f} bi**
-    """)
+    st.markdown("### Leitura de Política Pública")
+
+    st.markdown("""
+O RETI não foi desenhado para se pagar via tributação direta.  
+Seu objetivo é alterar a composição do crescimento.
+
+A sustentabilidade depende de três condições:
+
+1. Controle de fluxo (cap)
+2. Recalibração periódica do multiplicador
+3. Ganhos de produtividade de segunda ordem (não modelados aqui)
+""")
+
+    st.markdown("### Conclusão Realista")
+
+    st.warning("""
+Sem governança → trajetória explosiva  
+Com cap + gatilhos → política fiscal controlável  
+
+O RETI é viável como instrumento de política industrial,
+não como mecanismo neutro do ponto de vista fiscal.
+""")
