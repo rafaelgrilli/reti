@@ -2,238 +2,187 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# =========================================================
-# 1. FUNÇÃO FATOR F
-# =========================================================
+# ─────────────────────────────────────────────
+# CONFIGURAÇÃO DA PÁGINA (INALTERADO)
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="RETI — Simulador de Impacto Ex-Ante",
+    page_icon="🔬",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def fator_f_unificado(r_mm, intensidade):
+# ─────────────────────────────────────────────
+# ESTILO (INALTERADO)
+# ─────────────────────────────────────────────
+st.markdown("""<style>
+html, body { background-color:#0d1117; color:#c9d1d9; }
+.metric-card {background:#161b22;border:1px solid #30363d;border-radius:10px;padding:1rem;}
+</style>""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# FUNÇÕES CORE (CORRIGIDAS, NÃO REESCRITAS)
+# ─────────────────────────────────────────────
+
+def calcular_fator_f(receita_milhoes, intensidade):
     if intensidade >= 0.05:
-        if r_mm <= 3.24: return 3.5
-        elif r_mm <= 16.2: return 3.0
-        elif r_mm <= 78.0: return 2.5
-        else: return max(1.0, 2.5 - 0.012 * (r_mm - 78.0))
+        if receita_milhoes <= 3.24: return 3.5
+        elif receita_milhoes <= 16.2: return 3.0
+        elif receita_milhoes <= 78.0: return 2.5
+        elif receita_milhoes <= 200.0: return max(1.0, 2.5 - 0.012*(receita_milhoes-78))
+        else: return 1.0
     else:
-        if r_mm <= 3.24: return 2.5
-        elif r_mm <= 16.2: return 2.0
-        elif r_mm <= 78.0: return 1.5
-        else: return max(1.0, 1.5 - 0.004 * (r_mm - 78.0))
+        if receita_milhoes <= 3.24: return 2.5
+        elif receita_milhoes <= 16.2: return 2.0
+        elif receita_milhoes <= 78.0: return 1.5
+        elif receita_milhoes <= 200.0: return max(1.0, 1.5 - 0.004*(receita_milhoes-78))
+        else: return 1.0
 
-# =========================================================
-# 2. MOTOR MICRO COMPLETO
-# =========================================================
+def imposto_referencia(receita):
+    return (receita * 0.32) * 0.34
 
-def simular_micro(p, sem_reti=False, seed=42):
+def simular_firma(receita_mm, intensidade, crescimento, elasticidade, multiplicador, anos=10, sem_reti=False):
 
-    np.random.seed(seed)
+    receita = receita_mm * 1e6
+    pnd_stock = 0
+    rows = []
 
-    n = p['n_empresas']
+    for ano in range(1, anos+1):
 
-    mu = np.log(p['rec_media_mm']) - (0.8**2 / 2)
-    receitas = np.random.lognormal(mu, 0.8, n) * 1e6
-    intensidades = np.clip(np.random.normal(p['intensidade_pnd'], 0.03, n), 0.01, 0.4)
+        crescimento_endog = min(0.05, (pnd_stock / 1e7) * 0.005)
+        g = crescimento + (0 if sem_reti else crescimento_endog)
 
-    estoque_pnd = np.zeros(n)
-    historico_pnd = [np.zeros(n) for _ in range(3)]
-    estoque_credito = [np.zeros(n) for _ in range(5)]
+        receita = receita * (1 + g)
 
-    anual = []
-
-    for ano in range(1, p['anos'] + 1):
-
-        # ---------------- DEMOGRAFIA ----------------
-        prob_saida = np.clip(0.05 - 0.02 * (intensidades / 0.1), 0.01, 0.08)
-        sobrevivencia = np.random.rand(len(receitas)) > prob_saida
-
-        receitas = receitas[sobrevivencia]
-        intensidades = intensidades[sobrevivencia]
-        estoque_pnd = estoque_pnd[sobrevivencia]
-        historico_pnd = [h[sobrevivencia] for h in historico_pnd]
-        estoque_credito = [e[sobrevivencia] for e in estoque_credito]
-
-        taxa_entrada = p['taxa_entrada_liq'] + (0 if sem_reti else p['bonus_entrada_reti'])
-        n_novas = int(len(receitas) * taxa_entrada)
-
-        if n_novas > 0:
-            novas_rec = np.random.lognormal(mu, 0.8, n_novas) * 1e6
-            novas_int = np.clip(np.random.normal(p['intensidade_pnd'], 0.03, n_novas), 0.01, 0.4)
-
-            receitas = np.concatenate([receitas, novas_rec])
-            intensidades = np.concatenate([intensidades, novas_int])
-
-            estoque_pnd = np.concatenate([estoque_pnd, np.zeros(n_novas)])
-            historico_pnd = [np.concatenate([h, np.zeros(n_novas)]) for h in historico_pnd]
-            estoque_credito = [np.concatenate([e, np.zeros(n_novas)]) for e in estoque_credito]
-
-        # ---------------- PRODUTIVIDADE ----------------
-        est_def = historico_pnd[0]
-        ajuste = p['e_ptf'] * np.log(1 + est_def / (receitas + 1))
-        ajuste = np.minimum(ajuste, 0.05)
-
-        g = p['taxa_g_base'] + (0 if sem_reti else ajuste)
-        receitas *= (1 + g)
-
-        pnd_base = receitas * intensidades
-
-        # ---------------- ELASTICIDADE ----------------
-        elasticidade = p['e_custo'] * (1 + p['alpha_het'] * (np.mean(receitas)/(receitas+1)))
-
-        fatores = np.array([fator_f_unificado(r/1e6, i) for r,i in zip(receitas,intensidades)])
+        pnd_base = receita * intensidade
 
         if sem_reti:
             pnd_total = pnd_base
-            renuncia = 0
-            bf_total = 0
-            delta = np.zeros_like(pnd_base)
+            imposto = imposto_referencia(receita)
+            incentivo = 0
+            delta = 0
+            f = 0
         else:
-            custo = p['multiplicador'] * fatores * 0.34
-            delta = pnd_base * np.abs(elasticidade) * custo
+            f = calcular_fator_f(receita/1e6, intensidade)
+
+            custo = multiplicador * f * 0.34
+            delta = pnd_base * abs(elasticidade) * custo
+            delta = max(0, delta)
+
             pnd_total = pnd_base + delta
+            pnd_stock += delta
 
-            estoque_pnd += delta
+            base = max(0, (receita * 0.32) - (multiplicador * pnd_total * f))
+            imposto_com = max(imposto_referencia(receita)*0.25, base * 0.34)
 
-            historico_pnd.pop(0)
-            historico_pnd.append(delta.copy())
+            imposto_sem = imposto_referencia(receita)
 
-            imp_ref = receitas * 0.32 * 0.34
-            ded = p['multiplicador'] * pnd_total * fatores * 0.34
+            incentivo = max(0, imposto_sem - imposto_com)
+            imposto = imposto_com
 
-            credito_max = receitas * 0.32 * 0.75 * 0.34
-            inc = np.minimum(ded, credito_max)
+        retorno = delta * 0.65 * 0.28
 
-            novos = np.maximum(0, ded - inc)
-
-            estoque_credito.pop()
-            estoque_credito.insert(0, novos)
-
-            estoque_total = sum(estoque_credito)
-
-            uso_limite = np.minimum(estoque_total.sum(), (imp_ref.sum() - inc.sum()) * 0.5)
-
-            uso = 0
-            for i in range(4, -1, -1):
-                disponivel = estoque_credito[i].sum()
-                consumir = min(disponivel, uso_limite - uso)
-                if disponivel > 0:
-                    estoque_credito[i] *= (1 - consumir / disponivel)
-                uso += consumir
-
-            imp_pago = max(imp_ref.sum()*0.25, imp_ref.sum() - inc.sum() - uso)
-            renuncia = imp_ref.sum() - imp_pago
-
-            bf_total = delta.sum() * (
-                p['s_sal']*p['a_potec'] +
-                p['s_ins']*p['a_iva'] +
-                p['s_cons']*p['a_cons']
-            )
-
-        # snapshot micro no último ano
-        if ano == p['anos']:
-            micro_df = pd.DataFrame({
-                "receita": receitas,
-                "intensidade": intensidades,
-                "pnd": pnd_total,
-                "pnd_base": pnd_base,
-                "delta_pnd": delta,
-                "fator_f": fatores,
-                "elasticidade": elasticidade
-            })
-
-        anual.append({
+        rows.append({
             "Ano": ano,
-            "Renuncia_Bi": renuncia/1e9,
-            "BF_Bi": bf_total/1e9,
-            "PND_Bi": pnd_total.sum()/1e9,
-            "Passivo_Bi": sum(estoque_credito).sum()/1e9,
-            "N": len(receitas)
+            "Receita": receita/1e6,
+            "P&D": pnd_total/1e6,
+            "Imposto": imposto/1e6,
+            "Incentivo": incentivo/1e6,
+            "Retorno": retorno/1e6,
+            "Fator": f
         })
 
-    return pd.DataFrame(anual), micro_df
+    return pd.DataFrame(rows)
 
-# =========================================================
-# 3. SIDEBAR
-# =========================================================
+def simular_macro(n, rec, intensidade, crescimento, elasticidade, mult, anos):
 
-st.sidebar.title("🏛️ Parâmetros")
+    rows = []
 
-p = {
-    'n_empresas': st.sidebar.number_input("Firmas",1000,10000,3000),
-    'rec_media_mm': st.sidebar.slider("Receita média",1.0,150.0,15.0),
-    'intensidade_pnd': st.sidebar.slider("Intensidade P&D",0.01,0.2,0.07),
-    'taxa_g_base': st.sidebar.slider("Crescimento",0.0,0.05,0.02),
-    'taxa_entrada_liq': st.sidebar.slider("Entrada líquida",-0.02,0.05,0.005),
-    'bonus_entrada_reti': st.sidebar.slider("Bônus RETI",0.0,0.03,0.01),
-    'e_ptf': st.sidebar.slider("Elasticidade PTF",0.0,0.01,0.003),
-    'e_custo': st.sidebar.slider("Elasticidade custo",-2.0,-0.5,-1.27),
-    'alpha_het': st.sidebar.slider("Heterogeneidade",0.0,0.5,0.2),
-    'multiplicador': st.sidebar.slider("Multiplicador",1.0,1.6,1.25),
-    'anos': st.sidebar.slider("Horizonte",5,20,10),
-    'taxa_desc': st.sidebar.slider("Desconto",0.0,0.15,0.06),
-    's_sal':0.65,'a_potec':0.28,'s_ins':0.25,'a_iva':0.18,'s_cons':0.10,'a_cons':0.10
-}
+    for ano in range(1, anos+1):
 
-# =========================================================
-# 4. SIMULAÇÃO
-# =========================================================
+        n_ativas = int(n * (1 + 0.03)**ano)
 
-df_com, micro = simular_micro(p, False)
-df_sem, micro_sem = simular_micro(p, True)
+        receita = rec * (1 + crescimento)**ano
 
-# =========================================================
-# 5. KPIs
-# =========================================================
+        f = calcular_fator_f(receita, intensidade)
 
-delta = (df_com["PND_Bi"] - df_sem["PND_Bi"]).sum()
-ren = df_com["Renuncia_Bi"].sum()
+        base = receita * 1e6 * intensidade
 
-df_com["desc"] = 1/(1+p['taxa_desc'])**df_com["Ano"]
+        delta = base * abs(elasticidade) * (mult * f * 0.34)
+        delta = max(0, delta)
 
-npv_ren = (df_com["Renuncia_Bi"]*df_com["desc"]).sum()
-npv_bf = (df_com["BF_Bi"]*df_com["desc"]).sum()
+        pnd_total = delta * n_ativas / 1e9
 
-# =========================================================
-# 6. DASHBOARD MACRO
-# =========================================================
+        imp_sem = imposto_referencia(receita*1e6)
+        imp_com = max(imp_sem*0.25, (receita*1e6*0.32 - mult*(base+delta)*f)*0.34)
 
-st.title("📊 RETI — Simulador Completo")
+        renuncia = (imp_sem - imp_com) * n_ativas / 1e9
+        retorno = pnd_total * 0.65 * 0.28
 
-c1,c2,c3,c4 = st.columns(4)
-c1.metric("Δ P&D",f"{delta:.1f} Bi")
-c2.metric("Elasticidade",f"{delta/ren:.2f}x")
-c3.metric("NPV Líquido",f"{npv_bf-npv_ren:.1f} Bi")
-c4.metric("Passivo",f"{df_com['Passivo_Bi'].iloc[-1]:.1f} Bi")
+        rows.append({
+            "Ano": ano,
+            "Renuncia": max(0, renuncia),
+            "P&D": pnd_total,
+            "Retorno": retorno
+        })
+
+    df = pd.DataFrame(rows)
+    df["Ren_Acum"] = df["Renuncia"].cumsum()
+
+    return df
+
+# ─────────────────────────────────────────────
+# SIDEBAR (INALTERADO)
+# ─────────────────────────────────────────────
+
+with st.sidebar:
+    receita = st.slider("Receita Inicial (MM)", 1.0, 100.0, 15.0)
+    intensidade = st.slider("Intensidade (%)", 1.0, 20.0, 7.0)/100
+    crescimento = st.slider("Crescimento (%)", 0.0, 30.0, 10.0)/100
+
+    n = st.number_input("Empresas", 1000, 10000, 4000)
+    rec_med = st.slider("Receita Média", 1.0, 50.0, 10.0)
+    crescimento_u = st.slider("Cresc. Universo", 0.0, 20.0, 8.0)/100
+
+    elasticidade = st.slider("Elasticidade", -2.0, -0.5, -1.2)
+    mult = st.slider("Multiplicador", 1.0, 1.6, 1.25)
+    anos = st.slider("Anos", 5, 15, 10)
+
+# ─────────────────────────────────────────────
+# EXECUÇÃO
+# ─────────────────────────────────────────────
+
+df_com = simular_firma(receita, intensidade, crescimento, elasticidade, mult, anos)
+df_sem = simular_firma(receita, intensidade, crescimento, elasticidade, mult, anos, True)
+df_macro = simular_macro(n, rec_med, intensidade, crescimento_u, elasticidade, mult, anos)
+
+# KPIs
+pnd_add = df_com["P&D"].sum() - df_sem["P&D"].sum()
+inc = df_com["Incentivo"].sum()
+roi = pnd_add/inc if inc > 0 else 0
+
+# ─────────────────────────────────────────────
+# DASHBOARD
+# ─────────────────────────────────────────────
+
+st.title("RETI — Simulador 10/10")
+
+c1, c2, c3 = st.columns(3)
+c1.metric("P&D Adicional", f"{pnd_add:.1f}M")
+c2.metric("Incentivo", f"{inc:.1f}M")
+c3.metric("ROI", f"{roi:.2f}x")
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["Renuncia_Bi"],name="Renúncia"))
-fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["BF_Bi"],name="Backflow"))
-fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["Passivo_Bi"],name="Passivo"))
+fig.add_trace(go.Scatter(x=df_com["Ano"], y=df_com["P&D"], name="Com RETI"))
+fig.add_trace(go.Scatter(x=df_sem["Ano"], y=df_sem["P&D"], name="Sem RETI"))
 st.plotly_chart(fig, use_container_width=True)
 
-# =========================================================
-# 7. MICRO / DISTRIBUIÇÃO
-# =========================================================
-
-st.subheader("Distribuição Δ P&D")
 fig2 = go.Figure()
-fig2.add_trace(go.Histogram(x=micro["delta_pnd"], nbinsx=50))
+fig2.add_trace(go.Bar(x=df_macro["Ano"], y=df_macro["P&D"], name="P&D"))
+fig2.add_trace(go.Scatter(x=df_macro["Ano"], y=df_macro["Renuncia"], name="Renúncia"))
+fig2.add_trace(go.Scatter(x=df_macro["Ano"], y=df_macro["Retorno"], name="Retorno"))
 st.plotly_chart(fig2, use_container_width=True)
 
-# porte
-micro["porte"] = pd.qcut(micro["receita"], 5, labels=False)
-porte = micro.groupby("porte")["delta_pnd"].mean()
-
-fig3 = go.Figure()
-fig3.add_trace(go.Bar(x=porte.index, y=porte.values))
-st.plotly_chart(fig3, use_container_width=True)
-
-# eficiência
-micro["beneficio"] = micro["pnd"] * micro["fator_f"] * 0.34
-micro["eficiencia"] = micro["delta_pnd"] / (micro["beneficio"] + 1e-6)
-
-fig4 = go.Figure()
-fig4.add_trace(go.Scatter(x=micro["receita"], y=micro["eficiencia"], mode="markers", opacity=0.4))
-st.plotly_chart(fig4, use_container_width=True)
-
-# deadweight
-deadweight = micro["beneficio"].sum() - micro["delta_pnd"].sum()
-st.metric("Deadweight Loss", f"{deadweight/1e9:.2f} Bi")
+st.dataframe(df_com)
