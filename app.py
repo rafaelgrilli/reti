@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# ─────────────────────────────────────────────
-# 1. FUNÇÃO FATOR F
-# ─────────────────────────────────────────────
+# =========================================================
+# 1. FUNÇÕES CORE
+# =========================================================
+
 def fator_f_unificado(r_mm, intensidade):
     if intensidade >= 0.05:
         if r_mm <= 3.24: return 3.5
@@ -18,195 +19,210 @@ def fator_f_unificado(r_mm, intensidade):
         elif r_mm <= 78.0: return 1.5
         else: return max(1.0, 1.5 - 0.004 * (r_mm - 78.0))
 
-# ─────────────────────────────────────────────
-# 2. MOTOR MICRO CORRIGIDO
-# ─────────────────────────────────────────────
-def simular_micro(p, sem_reti=False, seed=0):
+# =========================================================
+# 2. MOTOR MICRO (COM CORREÇÃO DE SOBREVIVÊNCIA)
+# =========================================================
+
+def simular_micro(p, sem_reti=False, seed=42):
+
     np.random.seed(seed)
 
     n = p['n_empresas']
-    mu = np.log(p['rec_media_mm']) - (0.8**2)/2
 
+    # Inicialização
+    mu = np.log(p['rec_media_mm']) - (0.8**2 / 2)
     receitas = np.random.lognormal(mu, 0.8, n) * 1e6
     intensidades = np.clip(np.random.normal(p['intensidade_pnd'], 0.03, n), 0.01, 0.4)
-    shock = np.random.lognormal(0, 0.2, n)
 
-    estoques_pnd = np.zeros(n)
+    estoque_pnd = np.zeros(n)
     historico_pnd = [np.zeros(n) for _ in range(3)]
 
-    # FIFO por firma
-    estoque_fifo = [[0]*5 for _ in range(n)]
+    estoque_credito = [np.zeros(n) for _ in range(5)]
 
     anual = []
 
     for ano in range(1, p['anos'] + 1):
 
-        # ───── mortalidade (FIX)
-        mask = np.random.uniform(0,1,len(receitas)) > p['taxa_mortalidade']
+        # -------------------------------------------------
+        # DEMOGRAFIA (ENTRADA + SAÍDA) — FIX DO BUG
+        # -------------------------------------------------
 
-        receitas = receitas[mask]
-        intensidades = intensidades[mask]
-        shock = shock[mask]
-        estoques_pnd = estoques_pnd[mask]
-        historico_pnd = [h[mask] for h in historico_pnd]
+        prob_saida = np.clip(0.05 - 0.02 * (intensidades / 0.1), 0.01, 0.08)
+        sobrevivencia = np.random.rand(len(receitas)) > prob_saida
 
-        estoque_fifo = [estoque_fifo[i] for i, keep in enumerate(mask) if keep]
+        # ✔ FIX: aplicar máscara em TODOS vetores
+        receitas = receitas[sobrevivencia]
+        intensidades = intensidades[sobrevivencia]
+        estoque_pnd = estoque_pnd[sobrevivencia]
 
-        # ───── entrada
+        historico_pnd = [h[sobrevivencia] for h in historico_pnd]
+        estoque_credito = [e[sobrevivencia] for e in estoque_credito]
+
+        # Entrada
         taxa_entrada = p['taxa_entrada_liq'] + (0 if sem_reti else p['bonus_entrada_reti'])
-        n_new = int(len(receitas) * taxa_entrada)
+        n_novas = int(len(receitas) * taxa_entrada)
 
-        if n_new > 0:
-            novas_rec = np.random.lognormal(mu,0.8,n_new)*1e6
-            novas_int = np.clip(np.random.normal(p['intensidade_pnd'],0.03,n_new),0.01,0.4)
+        if n_novas > 0:
+            novas_rec = np.random.lognormal(mu, 0.8, n_novas) * 1e6
+            novas_int = np.clip(np.random.normal(p['intensidade_pnd'], 0.03, n_novas), 0.01, 0.4)
 
             receitas = np.concatenate([receitas, novas_rec])
             intensidades = np.concatenate([intensidades, novas_int])
-            shock = np.concatenate([shock, np.random.lognormal(0,0.2,n_new)])
-            estoques_pnd = np.concatenate([estoques_pnd, np.zeros(n_new)])
 
-            for i in range(3):
-                historico_pnd[i] = np.concatenate([historico_pnd[i], np.zeros(n_new)])
+            estoque_pnd = np.concatenate([estoque_pnd, np.zeros(n_novas)])
 
-            estoque_fifo += [[0]*5 for _ in range(n_new)]
+            historico_pnd = [np.concatenate([h, np.zeros(n_novas)]) for h in historico_pnd]
+            estoque_credito = [np.concatenate([e, np.zeros(n_novas)]) for e in estoque_credito]
 
-        # ───── produtividade
+        # -------------------------------------------------
+        # PRODUTIVIDADE COM LAG
+        # -------------------------------------------------
+
         est_def = historico_pnd[0]
-        g = p['taxa_g_base'] + (0 if sem_reti else p['e_ptf'] * np.log(1 + est_def/(receitas+1)))
+        ajuste = p['e_ptf'] * np.log(1 + est_def / (receitas + 1))
+        ajuste = np.minimum(ajuste, 0.05)
+
+        g = p['taxa_g_base'] + (0 if sem_reti else ajuste)
 
         receitas *= (1 + g)
 
         pnd_base = receitas * intensidades
 
-        # restrição de caixa
-        limite_caixa = receitas * 0.15
+        # -------------------------------------------------
+        # ELASTICIDADE
+        # -------------------------------------------------
 
-        elasticidade = p['e_custo'] * shock
+        elasticidade = p['e_custo'] * (1 + p['alpha_het'] * (np.mean(receitas)/(receitas+1)))
+
+        # -------------------------------------------------
+        # RETI
+        # -------------------------------------------------
+
         fatores = np.array([fator_f_unificado(r/1e6, i) for r,i in zip(receitas,intensidades)])
 
         if sem_reti:
-            d_pnd = np.zeros(len(receitas))
+            pnd_total = pnd_base
+            renuncia = 0
+            bf_total = 0
         else:
-            c_marginal = p['multiplicador'] * fatores * 0.34
-            d_pnd = pnd_base * np.abs(elasticidade) * c_marginal
-            d_pnd = np.minimum(d_pnd, limite_caixa)
+            custo = p['multiplicador'] * fatores * 0.34
 
-        pnd_total = pnd_base + d_pnd
+            delta = pnd_base * np.abs(elasticidade) * custo
+            pnd_total = pnd_base + delta
 
-        # ───── tributação
-        imp_ref = receitas * 0.32 * 0.34
-        ded = p['multiplicador'] * pnd_total * fatores * 0.34
-        inc = np.minimum(ded, receitas * 0.32 * 0.75 * 0.34)
+            estoque_pnd += delta
 
-        novos_creditos = np.maximum(0, ded - inc)
-        uso_total = np.zeros(len(receitas))
+            historico_pnd.pop(0)
+            historico_pnd.append(delta.copy())
 
-        # ───── FIFO por firma (CORRETO)
-        for i in range(len(estoque_fifo)):
-            estoque_fifo[i].insert(0, novos_creditos[i])
-            estoque_fifo[i] = estoque_fifo[i][:5]
+            # Fiscal
+            imp_ref = receitas * 0.32 * 0.34
+            ded = p['multiplicador'] * pnd_total * fatores * 0.34
 
-            limite = (imp_ref[i] - inc[i]) * 0.5
+            credito_max = receitas * 0.32 * 0.75 * 0.34
+            inc = np.minimum(ded, credito_max)
+
+            novos = np.maximum(0, ded - inc)
+
+            estoque_credito.pop()
+            estoque_credito.insert(0, novos)
+
+            estoque_total = sum(estoque_credito)
+
+            uso_limite = np.minimum(estoque_total.sum(), (imp_ref.sum() - inc.sum()) * 0.5)
+
             uso = 0
+            for i in range(4, -1, -1):
+                disponivel = estoque_credito[i].sum()
+                consumir = min(disponivel, uso_limite - uso)
+                if disponivel > 0:
+                    estoque_credito[i] *= (1 - consumir / disponivel)
+                uso += consumir
 
-            for idade in range(4, -1, -1):
-                disponivel = estoque_fifo[i][idade]
-                usar = min(disponivel, limite - uso)
-                estoque_fifo[i][idade] -= usar
-                uso += usar
-                if uso >= limite:
-                    break
+            imp_pago = max(imp_ref.sum()*0.25, imp_ref.sum() - inc.sum() - uso)
+            renuncia = imp_ref.sum() - imp_pago
 
-            uso_total[i] = uso
-
-        imp_pago = np.maximum(imp_ref * 0.25, imp_ref - inc - uso_total)
-        renuncia = imp_ref - imp_pago
-
-        # ───── backflow micro
-        bf = d_pnd * (p['s_sal']*p['a_potec'] + p['s_ins']*p['a_iva'] + p['s_cons']*p['a_cons'])
-
-        # ───── update lag
-        historico_pnd.pop(0)
-        historico_pnd.append(d_pnd)
-
-        # ───── passivo
-        passivo = np.array([np.sum(f) for f in estoque_fifo])
-
-        # sanity
-        receitas = np.maximum(receitas, 1)
-        pnd_total = np.minimum(pnd_total, receitas)
+            bf_total = delta.sum() * (
+                p['s_sal']*p['a_potec'] +
+                p['s_ins']*p['a_iva'] +
+                p['s_cons']*p['a_cons']
+            )
 
         anual.append({
             "Ano": ano,
-            "Renuncia": renuncia.sum(),
-            "Backflow": bf.sum(),
-            "Passivo": passivo.sum(),
-            "P&D": pnd_total.sum()
+            "Renuncia_Bi": renuncia/1e9,
+            "BF_Bi": bf_total/1e9,
+            "PND_Bi": pnd_total.sum()/1e9,
+            "Passivo_Bi": sum(estoque_credito).sum()/1e9,
+            "N": len(receitas)
         })
 
     return pd.DataFrame(anual)
 
-# ─────────────────────────────────────────────
-# 3. MONTE CARLO PAREADO
-# ─────────────────────────────────────────────
-def rodar_mc(p, n_sim=30):
-    resultados = []
+# =========================================================
+# 3. SIDEBAR (TOTAL CONTROLE RESTAURADO)
+# =========================================================
 
-    for s in range(n_sim):
-        com = simular_micro(p, False, seed=s)
-        sem = simular_micro(p, True, seed=s)
-
-        df = com.copy()
-        df["Delta_P&D"] = com["P&D"] - sem["P&D"]
-
-        fator = 1 / ((1 + p['taxa_desc']) ** df["Ano"])
-        npv_ren = (df["Renuncia"] * fator).sum()
-        npv_bf = (df["Backflow"] * fator).sum()
-
-        resultados.append({
-            "npv": npv_bf - npv_ren,
-            "roi": npv_bf / npv_ren if npv_ren > 0 else 0
-        })
-
-    return pd.DataFrame(resultados)
-
-# ─────────────────────────────────────────────
-# 4. UI
-# ─────────────────────────────────────────────
-st.title("RETI — Simulador Policy Grade (10/10)")
+st.sidebar.title("🏛️ Parâmetros")
 
 p = {
-    'n_empresas': 2000,
-    'rec_media_mm': 15,
-    'intensidade_pnd': 0.07,
-    'taxa_g_base': 0.02,
-    'taxa_entrada_liq': 0.005,
-    'bonus_entrada_reti': 0.01,
-    'taxa_mortalidade': 0.02,
-    'e_custo': -1.2,
-    'e_ptf': 0.003,
-    'multiplicador': 1.25,
-    'anos': 10,
-    'taxa_desc': 0.06,
-    's_sal': 0.65, 'a_potec':0.28,
-    's_ins':0.25,'a_iva':0.18,
-    's_cons':0.10,'a_cons':0.10
+    'n_empresas': st.sidebar.number_input("Firmas",1000,10000,3000),
+    'rec_media_mm': st.sidebar.slider("Receita média",1.0,150.0,15.0),
+    'intensidade_pnd': st.sidebar.slider("Intensidade P&D",0.01,0.2,0.07),
+    'taxa_g_base': st.sidebar.slider("Crescimento",0.0,0.05,0.02),
+    'taxa_entrada_liq': st.sidebar.slider("Entrada líquida",-0.02,0.05,0.005),
+    'bonus_entrada_reti': st.sidebar.slider("Bônus RETI",0.0,0.03,0.01),
+    'e_ptf': st.sidebar.slider("Elasticidade PTF",0.0,0.01,0.003),
+    'e_custo': st.sidebar.slider("Elasticidade custo",-2.0,-0.5,-1.27),
+    'alpha_het': st.sidebar.slider("Heterogeneidade",0.0,0.5,0.2),
+    'multiplicador': st.sidebar.slider("Multiplicador",1.0,1.6,1.25),
+    'anos': st.sidebar.slider("Horizonte",5,20,10),
+    'taxa_desc': st.sidebar.slider("Desconto",0.0,0.15,0.06),
+    's_sal':0.65,'a_potec':0.28,'s_ins':0.25,'a_iva':0.18,'s_cons':0.10,'a_cons':0.10
 }
 
-mc = rodar_mc(p, n_sim=30)
+# =========================================================
+# 4. MONTE CARLO (SEM QUEBRAR UX)
+# =========================================================
 
-# KPIs
-st.metric("NPV Médio (R$)", f"{mc['npv'].mean():,.0f}")
-st.metric("NPV P10", f"{mc['npv'].quantile(0.1):,.0f}")
-st.metric("NPV P90", f"{mc['npv'].quantile(0.9):,.0f}")
-st.metric("ROI Médio", f"{mc['roi'].mean():.2f}x")
+def rodar_mc(p, n_sim=20):
+    sims = []
+    for s in range(n_sim):
+        sims.append(simular_micro(p, False, seed=s))
+    return pd.concat(sims).groupby("Ano").mean().reset_index()
 
-# gráfico
+df_com = rodar_mc(p)
+df_sem = simular_micro(p, True)
+
+# =========================================================
+# 5. KPIs SPE
+# =========================================================
+
+delta = (df_com["PND_Bi"] - df_sem["PND_Bi"]).sum()
+ren = df_com["Renuncia_Bi"].sum()
+
+df_com["desc"] = 1/(1+p['taxa_desc'])**df_com["Ano"]
+
+npv_ren = (df_com["Renuncia_Bi"]*df_com["desc"]).sum()
+npv_bf = (df_com["BF_Bi"]*df_com["desc"]).sum()
+
+# =========================================================
+# 6. DASHBOARD
+# =========================================================
+
+st.title("📊 RETI — Simulador Fiscal")
+
+c1,c2,c3,c4 = st.columns(4)
+
+c1.metric("Δ P&D",f"{delta:.1f} Bi")
+c2.metric("Elasticidade",f"{delta/ren:.2f}x")
+c3.metric("NPV Líquido",f"{npv_bf-npv_ren:.1f} Bi")
+c4.metric("Passivo",f"{df_com['Passivo_Bi'].iloc[-1]:.1f} Bi")
+
 fig = go.Figure()
-fig.add_histogram(x=mc["npv"])
-fig.update_layout(title="Distribuição do NPV")
-st.plotly_chart(fig, use_container_width=True)
 
-# export
-csv = mc.to_csv(index=False).encode()
-st.download_button("Download CSV", csv, "reti_sim.csv")
+fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["Renuncia_Bi"],name="Renúncia"))
+fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["BF_Bi"],name="Backflow"))
+fig.add_trace(go.Scatter(x=df_com["Ano"],y=df_com["Passivo_Bi"],name="Passivo"))
+
+st.plotly_chart(fig, use_container_width=True)
