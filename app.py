@@ -172,22 +172,72 @@ with tab2:
     st.plotly_chart(fig, use_container_width=True)
 
 # ───────── DIAGNÓSTICO
-with tab3:
-    st.subheader("Diagnóstico do Programa")
+with st.expander("🧠 Diagnóstico Econômico e Fiscal (Leitura para Decisão)"):
+    ren_total = df_macro["Renúncia Fiscal (R$ Bi)"].sum()
+    bf_total = df_macro["Retorno Tributário Indireto (R$ Bi)"].sum()
+    pnd_total = df_macro["P&D Incremental (R$ Bi)"].sum()
+    ren_liq_total = df_macro["Renúncia Líquida (R$ Bi)"].sum()
 
-    ratio = df_m["Retorno Acum"].iloc[-1] / df_m["Renúncia Acum"].iloc[-1] if df_m["Renúncia Acum"].iloc[-1] > 0 else 0
+    ratio_retorno = bf_total / ren_total if ren_total > 0 else 0
+    elasticidade_fiscal = pnd_total / ren_total if ren_total > 0 else 0
 
-    if ratio > 1:
-        st.success("Programa fiscalmente sustentável (backflow > renúncia)")
-    elif ratio > 0.5:
-        st.warning("Programa parcialmente sustentável")
+    tendencia_ren = np.polyfit(df_macro["Ano"], df_macro["Renúncia Fiscal (R$ Bi)"], 1)[0]
+    tendencia_bf = np.polyfit(df_macro["Ano"], df_macro["Retorno Tributário Indireto (R$ Bi)"], 1)[0]
+
+    st.markdown("### 1. Eficiência Econômica")
+    if elasticidade_fiscal > 1:
+        st.success(f"O programa gera adicionalidade relevante: cada R$1 de renúncia induz R${elasticidade_fiscal:.2f} em P&D.")
     else:
-        st.error("Programa com risco fiscal elevado")
+        st.warning(f"A adicionalidade é limitada: cada R$1 de renúncia gera apenas R${elasticidade_fiscal:.2f} em P&D.")
 
-    st.metric("Razão Backflow/Renúncia", f"{ratio:.2f}")
+    st.markdown("### 2. Sustentabilidade Fiscal")
+    if ratio_retorno > 1:
+        st.success(f"O backflow cobre integralmente o custo fiscal (ROI = {ratio_retorno:.2f}x).")
+    elif ratio_retorno > 0.5:
+        st.warning(f"O programa recupera parcialmente a renúncia (ROI = {ratio_retorno:.2f}x), com custo fiscal relevante.")
+    else:
+        st.error(f"O programa apresenta baixa recuperação fiscal (ROI = {ratio_retorno:.2f}x).")
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Renúncia Acum"], name="Renúncia Acumulada"))
-    fig.add_trace(go.Scatter(x=df_m["Ano"], y=df_m["Retorno Acum"], name="Retorno Acumulado"))
-    fig.update_layout(title="Sustentabilidade Intertemporal")
-    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### 3. Dinâmica Intertemporal")
+    if tendencia_ren > tendencia_bf:
+        st.error("A renúncia cresce mais rápido que o retorno → trajetória fiscal **não sustentável** no longo prazo.")
+    else:
+        st.success("O retorno cresce em linha ou acima da renúncia → trajetória potencialmente sustentável.")
+
+    st.markdown("### 4. Diagnóstico Estrutural")
+    if elasticidade_fiscal < 1:
+        st.markdown("- O principal problema é **baixa resposta comportamental das firmas**.")
+    if ratio_retorno < 0.5:
+        st.markdown("- O desenho gera **vazamento fiscal elevado** (baixa captura tributária do benefício).")
+    if tendencia_ren > tendencia_bf:
+        st.markdown("- Há risco de **explosão intertemporal da renúncia** sem contrapartida.")
+
+    st.markdown("### 5. Implicações de Política (o que fazer?)")
+
+    if ratio_retorno < 1:
+        st.markdown("""
+- 🔧 **Reduzir o multiplicador RETI** → corta renúncia marginal sem eliminar incentivo  
+- 🎯 **Focalizar por intensidade de P&D** → concentrar benefício em firmas com maior adicionalidade  
+- ⏳ **Introduzir limite temporal ou sunset clause** → evita acumulação estrutural de passivo fiscal  
+        """)
+
+    if elasticidade_fiscal < 1:
+        st.markdown("""
+- 📉 **Recalibrar elasticidade implícita** (problema não é só incentivo, é capacidade de resposta)  
+- 🧪 **Complementar com instrumentos não fiscais** (subvenção, crédito direcionado)  
+        """)
+
+    if tendencia_ren > tendencia_bf:
+        st.markdown("""
+- ⚠️ **Implementar gatilhos fiscais automáticos**  
+    - redução do benefício se ROI < threshold  
+    - teto de renúncia como % do PIB  
+        """)
+
+    st.markdown("### 6. Conclusão Executiva")
+    if ratio_retorno > 1 and elasticidade_fiscal > 1:
+        st.success("Programa eficiente e sustentável → candidato a expansão.")
+    elif ratio_retorno > 0.5:
+        st.warning("Programa economicamente válido, mas exige **ajustes de desenho** para sustentabilidade.")
+    else:
+        st.error("Programa fiscalmente frágil → requer **reformulação estrutural antes de escala**.")
