@@ -29,7 +29,7 @@ def calcular_fator_f_bidimensional(receita, intensidade_pd, ajuste_extra_f=0):
     Implementa a Matriz Bidimensional da Proposta Final.
     Aplica escalonamento por porte e trava de intensidade de 5%.
     """
-    # 1. Escalonamento por Porte
+    # 1. Escalonamento por Porte [1]
     if receita <= 3.24:
         f_base = 3.5
     elif receita <= 16.2:
@@ -45,7 +45,7 @@ def calcular_fator_f_bidimensional(receita, intensidade_pd, ajuste_extra_f=0):
     # Aplica redução se o gatilho LRF do ano anterior foi ativado
     f_base = max(1.0, f_base - ajuste_extra_f)
 
-    # 2. Trava de Intensidade (Módulo Anti-Arbitragem) 
+    # 2. Trava de Intensidade de 5% (Módulo Anti-Arbitragem) [2]
     if intensidade_pd < 0.05:
         return max(1.0, f_base - 1.0)
     return f_base
@@ -55,16 +55,16 @@ def run_reti_engine(p):
     ALIQUOTA = 0.34
     PRESUNCAO = 0.32
     LAG = 3         # Maturação P&D para PTF
-    DEPREC = 0.15   # Depreciação do estoque de conhecimento
+    DEPREC = 0.15   # Depreciação tecnológica
     SUCESSO = 0.70  # Taxa de sucesso técnico
 
-    rows = # CORREÇÃO DA SINTAXE: Inicialização como lista vazia
+    rows = # LINHA 61 CORRIGIDA: Inicialização como lista vazia
     estoque_conhecimento = 0
     estoque_credito = 0
     historico_maturacao = np.zeros(p['horizonte'] + LAG + 5)
     receita = p['rec_inicial']
     
-    # Variáveis para controle de ajuste paramétrico (Hierarquia de Preferência)
+    # Controle de ajuste paramétrico (Hierarquia de Preferência)
     violation_last_year = False
     m_dinamico = p['mult_base']
     f_penalidade = 0
@@ -73,7 +73,7 @@ def run_reti_engine(p):
         rec_ant = receita
         receita *= (1 + p['crescimento'])
         
-        # 1. Regra de Ajuste Automático (Art. 7.2 da Proposta)
+        # 1. Regra de Ajuste Automático [3]
         if violation_last_year:
             # Hierarquia: 1. Multiplicador, 2. Fator F
             m_dinamico = max(1.0, p['mult_base'] - 0.15)
@@ -84,7 +84,7 @@ def run_reti_engine(p):
 
         f = calcular_fator_f_bidimensional(receita, p['intensidade_pd'], f_penalidade)
         
-        # 2. Adicionalidade (Kannebley, 2016): ε = -1.27
+        # 2. Adicionalidade (Kannebley, 2016): ε = -1.27 [4]
         pd_original = receita * p['intensidade_pd']
         beneficio_marginal = (m_dinamico * f * ALIQUOTA)
         pd_adicional = pd_original * abs(p['elasticidade']) * beneficio_marginal
@@ -98,17 +98,17 @@ def run_reti_engine(p):
         estoque_conhecimento = estoque_conhecimento * (1 - DEPREC) + pd_maturado
         ganho_ptf = (estoque_conhecimento / receita) * p['beta_ptf'] if receita > 0 else 0
         
-        # 4. Retorno Fiscal Indireto (PIB Dinâmico)
+        # 4. Retorno Fiscal Indireto (ROI Dinâmico)
         retorno_indireto = (receita * ganho_ptf) * ALIQUOTA
 
-        # 5. Engenharia de Créditos e Salvaguardas
+        # 5. Engenharia de Créditos e Salvaguardas [1]
         imp_ref = (receita * PRESUNCAO) * ALIQUOTA
         limite_anual_comp = imp_ref * 0.50 # Trava de 50%
         
         novo_credito = (m_dinamico * pd_total * f) * ALIQUOTA
         estoque_credito += novo_credito
 
-        # 6. Gatilho de Performance (PoTec 15% conforme IBGE/PINTEC) [5]
+        # 6. Gatilhos de Performance
         pode_usar = True
         if t > 3:
             cond_rec = (receita / rec_ant - 1) >= 0.10
@@ -133,7 +133,7 @@ def run_reti_engine(p):
             "Ano": t, "Fator F": f, "Multiplicador": m_dinamico, 
             "Ganho PTF (%)": ganho_ptf * 100, "Renúncia (R$ Bi)": ren_macro, 
             "Retorno (R$ Bi)": ret_macro, "Saldo (R$ Bi)": ret_macro - ren_macro,
-            "Adesão": int(firmas), "LRF": "✓" if not violation_last_year else "⚠"
+            "Adesão": int(firmas)
         })
 
     return pd.DataFrame(rows)
@@ -148,24 +148,24 @@ st.caption("Fomento à Inovação com Responsabilidade Fiscal Paramétrica")
 with st.sidebar:
     st.header("⚙️ Configurações de Política")
     n_firmas = st.number_input("Universo Elegível (PMEs)", value=4500)
-    teto_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
-    mult_base = st.slider("Multiplicador M (Dedução)", 1.0, 1.5, 1.25)
+    t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
+    m_base = st.slider("Multiplicador M (Dedução)", 1.0, 1.5, 1.25)
     
     st.header("🔬 Perfil da Firma")
-    rec_inicial = st.number_input("Receita Inicial (R$ MM)", value=15.0)
-    intensidade_pd = st.slider("Intensidade P&D", 0.01, 0.25, 0.07)
-    crescimento = st.slider("Crescimento Anual", 0.0, 0.30, 0.12)
+    r_ini = st.number_input("Receita Inicial (R$ MM)", value=15.0)
+    i_pd = st.slider("Intensidade P&D", 0.01, 0.25, 0.07)
+    cresc = st.slider("Crescimento Anual", 0.0, 0.30, 0.12)
     
     st.header("📈 Premissas Macro (SPE)")
-    beta_ptf = st.slider("β (Transmissão PTF)", 0.03, 0.12, 0.06)
-    potec = st.slider("Pessoal Técnico (%)", 0, 30, 18)
+    b_ptf = st.slider("β (Transmissão PTF)", 0.03, 0.12, 0.06)
+    p_tec = st.slider("PoTec (%)", 0, 30, 18)
 
 # Execução
 df = run_reti_engine({
-    "n_firmas": n_firmas, "mult_base": mult_base, "rec_inicial": rec_inicial,
-    "intensidade_pd": intensidade_pd, "crescimento": crescimento,
-    "elasticidade": -1.27, "beta_ptf": beta_ptf, "horizonte": 10,
-    "potec": potec, "patente_ano": 3, "teto_lrf": teto_lrf
+    "n_firmas": n_firmas, "mult_base": m_base, "rec_inicial": r_ini,
+    "intensidade_pd": i_pd, "crescimento": cresc,
+    "elasticidade": -1.27, "beta_ptf": b_ptf, "horizonte": 10,
+    "potec": p_tec, "patente_ano": 3, "teto_lrf": t_lrf
 })
 
 # KPIs
@@ -177,17 +177,17 @@ roi = (total_ret / total_ren - 1) * 100 if total_ren > 0 else 0
 c1.metric("Custo Fiscal Total", f"R$ {total_ren:.2f} Bi")
 c2.metric("Retorno PIB (PTF)", f"R$ {total_ret:.2f} Bi")
 c3.metric("ROI Líquido", f"{roi:.1f}%")
-c4.metric("Consistência LRF", "CONFORME" if df.max() <= teto_lrf else "ALERTA")
+c4.metric("Consistência LRF", "CONFORME" if df.max() <= t_lrf else "ALERTA")
 
 # Visualização
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df["Ano"], y=df, name="Custo (Renúncia)", fill='tozeroy', line_color='#E05252'))
 fig.add_trace(go.Scatter(x=df["Ano"], y=df, name="Retorno (PIB Dinâmico)", fill='tozeroy', line_color='#3EC97B'))
-fig.add_hline(y=teto_lrf, line_dash="dash", line_color="orange", annotation_text="Teto LRF")
+fig.add_hline(y=t_lrf, line_dash="dash", line_color="orange", annotation_text="Teto LRF")
 fig.update_layout(template="plotly_dark", height=450)
 st.plotly_chart(fig, use_container_width=True)
 
 if st.checkbox("Exibir Memória de Cálculo Anual"):
     st.dataframe(df.style.format("{:.3f}"))
 
-st.info("Metodologia: Fator F bidimensional $$. Adicionalidade de -1,27 $[6]$. Transmissão PTF via Resíduo de Solow SPE/2025 $[7]$.")
+st.info("Metodologia: Fator F bidimensional.[1] Adicionalidade de -1,27.[4] Transmissão PTF via Resíduo de Solow SPE/2025.")
