@@ -10,8 +10,8 @@ st.set_page_config(page_title="Simulador RETI v10.15", layout="wide")
 
 st.markdown("""
     <style>
-  .main { background-color: #0A0E1A; }
-  .stMetric { 
+   .main { background-color: #0A0E1A; }
+   .stMetric { 
         background-color: #0F1525; 
         border: 1px solid #1E2A45; 
         padding: 15px; 
@@ -42,8 +42,8 @@ def calcular_fator_f(receita, intensidade_pd):
     else:
         f_base = 1.0
 
-    # 2. Trava de Intensidade de 5% (Módulo Anti-Arbitragem) [2]
-    # Empresas com baixa intensidade (ex: SaaS maduro) sofrem redução de 1.0 ponto no fator
+    # 2. Trava de Intensidade de 5% (Módulo Anti-Arbitragem)
+    # Se a empresa investe menos de 5% em P&D, o fator cai 1 ponto (penalização setorial)
     if intensidade_pd < 0.05:
         return max(1.0, f_base - 1.0)
     return f_base
@@ -52,17 +52,17 @@ def run_reti_engine(p):
     """
     Motor dinâmico que simula a adicionalidade do P&D e o impacto no PIB potencial.
     """
-    # Parâmetros Estruturais da Proposta
+    # Parâmetros Estruturais fixados na Proposta
     ALÍQUOTA_COMBINADA = 0.34
     PRESUNCAO_LP = 0.32
-    LAG_MATURACAO = 3      
-    DEPREC_ESTOQUE = 0.15  
-    TAXA_SUCESSO = 0.70    
+    LAG_MATURACAO = 3      # Anos para o P&D virar PTF
+    DEPREC_ESTOQUE = 0.15  # Obsolescência tecnológica anual
+    TAXA_SUCESSO = 0.70    # Probabilidade de sucesso técnico do projeto
 
-    rows = # Inicialização corrigida
+    rows = # INICIALIZAÇÃO CORRIGIDA
     estoque_conhecimento = 0
     estoque_credito = 0
-    historico_pd_adicional = np.zeros(p['horizonte'] + LAG_MATURACAO + 2)
+    historico_pd_adicional = np.zeros(p['horizonte'] + LAG_MATURACAO + 5)
 
     receita = p['rec_inicial']
 
@@ -73,31 +73,32 @@ def run_reti_engine(p):
         # 1. Cálculo do Fator F Bidimensional
         f = calcular_fator_f(receita, p['intensidade_pd'])
         
-        # 2. Efeito Preço: Adicionalidade via Elasticidade (Kannebley et al., 2016) [3]
+        # 2. Efeito Preço: Adicionalidade via Elasticidade (Kannebley et al., 2016)
         pd_original = receita * p['intensidade_pd']
-        # User Cost Reduction = superdedução multiplicada pela alíquota
-        pd_adicional = pd_original * abs(p['elasticidade']) * (p['mult_base'] * f * ALÍQUOTA_COMBINADA)
+        # Benefício Marginal = Superdedução * Alíquota
+        beneficio_marginal = (p['mult_base'] * f * ALÍQUOTA_COMBINADA)
+        pd_adicional = pd_original * abs(p['elasticidade']) * beneficio_marginal
         pd_total = pd_original + pd_adicional
         
-        if t + LAG_MATURACAO <= p['horizonte'] + 1:
-            historico_pd_adicional = pd_adicional * TAXA_SUCESSO
+        # Maturação futura (P&D de hoje vira produtividade no futuro)
+        historico_pd_adicional = pd_adicional * TAXA_SUCESSO
 
-        # 3. Transmissão Macro (Metodologia SPE 2025): P&D -> PTF -> PIB Potencial [1]
+        # 3. Transmissão Macro (SPE 2025): P&D -> PTF -> PIB Potencial
         pd_maturado = historico_pd_adicional[t]
         estoque_conhecimento = estoque_conhecimento * (1 - DEPREC_ESTOQUE) + pd_maturado
         ganho_prod = (estoque_conhecimento / receita) * p['beta_ptf'] if receita > 0 else 0
         
-        # 4. Retorno Fiscal Indireto (ROI Dinâmico - Efeitos base, indireto e estrutural) [4]
+        # 4. Retorno Fiscal Indireto (PIB Dinâmico)
         retorno_indireto = (receita * ganho_prod) * ALÍQUOTA_COMBINADA
 
-        # 5. Engenharia de Créditos e Salvaguardas 
+        # 5. Engenharia de Créditos e Salvaguardas
         imp_ref = (receita * PRESUNCAO_LP) * ALÍQUOTA_COMBINADA
-        limite_anual_comp = imp_ref * 0.50 # Trava de 50% de compensação
+        limite_anual_comp = imp_ref * 0.50 # Trava de 50% de uso de créditos acumulados
         
         novo_credito = (p['mult_base'] * pd_total * f) * ALÍQUOTA_COMBINADA
         estoque_credito += novo_credito
 
-        # 6. Gatilhos de Performance (Pós-36 meses)
+        # 6. Gatilhos de Performance (Ano 4 em diante)
         pode_usar = True
         if t > 3:
             cond_rec = (receita / rec_ant - 1) >= 0.10
@@ -107,12 +108,13 @@ def run_reti_engine(p):
 
         uso_efetivo = min(estoque_credito, limite_anual_comp) if pode_usar else 0
         
-        # 7. Salvaguarda: Contribuição Mínima de 25% da base presumida
+        # 7. Salvaguarda de Arrecadação Mínima (25%)
         imp_final = max(imp_ref * 0.25, imp_ref - uso_efetivo)
         renuncia_firma = imp_ref - imp_final
         estoque_credito -= renuncia_firma
 
-        # 8. Agregação Macro (em R$ Bilhões) via Curva Sigmóide de Adesão
+        # 8. Agregação Macro (em R$ Bilhões)
+        # S-Curve de adesão: mercado leva tempo para processar o novo regime
         firmas_aderentes = p['n_firmas'] / (1 + np.exp(-1.2 * (t - 3)))
         renuncia_macro = (renuncia_firma * firmas_aderentes) / 1000
         retorno_macro = (retorno_indireto * firmas_aderentes) / 1000
@@ -125,7 +127,7 @@ def run_reti_engine(p):
             "Renúncia (R$ Bi)": renuncia_macro,
             "Retorno (R$ Bi)": retorno_macro,
             "Saldo (R$ Bi)": retorno_macro - renuncia_macro,
-            "Status": "Ativo" if pode_usar else "Suspenso"
+            "Adesão": int(firmas_aderentes)
         })
 
     return pd.DataFrame(rows)
@@ -139,17 +141,17 @@ st.subheader("Fomento à Inovação com Responsabilidade Fiscal - v10.15")
 
 with st.sidebar:
     st.header("⚙️ Configurações de Política")
-    n_firmas = st.number_input("Universo Alvo (PMEs Inovadoras)", value=4500)
+    n_firmas = st.number_input("Universo de MPMEs Inovadoras", value=4500)
     teto_lrf = st.slider("Teto Fiscal LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
     mult_base = st.slider("Multiplicador M (Dedução)", 1.0, 1.5, 1.25)
     
     st.header("🔬 Perfil Micro (Firma)")
     rec_inicial = st.number_input("Receita Inicial (R$ MM)", value=15.0)
-    intensidade_pd = st.slider("Intensidade P&D (% Receita)", 0.01, 0.20, 0.07, format="%.2f")
-    crescimento = st.slider("Crescimento Anual", 0.0, 0.30, 0.12)
+    intensidade_pd = st.slider("Intensidade P&D Original", 0.01, 0.20, 0.07, format="%.2f")
+    crescimento = st.slider("Crescimento Anual Receita", 0.0, 0.30, 0.12)
     
     st.header("📈 Modelo PTF (SPE 2025)")
-    elasticidade = st.slider("Elasticidade-Custo (Kannebley)", -2.0, -0.5, -1.27)
+    elasticidade = st.slider("Elasticidade (Kannebley)", -2.0, -0.5, -1.27)
     beta_ptf = st.slider("β (Transmissão P&D → PTF)", 0.03, 0.12, 0.06)
     
     st.header("🚩 Performance")
@@ -172,13 +174,13 @@ total_ren = df.sum()
 total_ret = df.sum()
 roi_liq = (total_ret / total_ren - 1) * 100 if total_ren > 0 else 0
 
-c1.metric("Custo Fiscal Total", f"R$ {total_ren:.2f} Bi", help="Acumulado em 10 anos")
-c2.metric("Retorno Indireto (PIB)", f"R$ {total_ret:.2f} Bi", help="Via ganhos de PTF")
+c1.metric("Custo Fiscal Total", f"R$ {total_ren:.2f} Bi", delta_color="inverse")
+c2.metric("Retorno Indireto (PIB)", f"R$ {total_ret:.2f} Bi")
 c3.metric("ROI Líquido", f"{roi_liq:.1f}%")
 c4.metric("Status LRF", "CONFORME" if df.max() <= teto_lrf else "ALERTA")
 
 # Gráficos
-st.markdown("### Fluxo de Caixa Dinâmico: Investimento Público em Inovação")
+st.markdown("### Fluxo de Caixa Dinâmico: Renúncia vs. Retorno via PTF")
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df["Ano"], y=df, name="Custo (Renúncia)", fill='tozeroy', line_color='#E05252'))
 fig.add_trace(go.Scatter(x=df["Ano"], y=df, name="Retorno (PIB Dinâmico)", fill='tozeroy', line_color='#3EC97B'))
@@ -200,6 +202,6 @@ if st.checkbox("Visualizar Memória de Cálculo Anual"):
 st.info(f"""
 **Notas Metodológicas (Conforme Proposta V17):**
 1. **Neutralidade:** Custo de R$ 1,8 bi compensado por receitas de *bets* e reforma administrativa.
-2. **Adicionalidade:** Estimada via elasticidade de {elasticidade} (estudo Kannebley/De Negri). [3]
-3. **Ajuste Hierárquico:** Em caso de estouro do teto, a redução ocorre primeiro no Multiplicador (1.25).
+2. **Adicionalidade:** Estimada via elasticidade de {elasticidade} (Kannebley/De Negri).
+3. **Ajuste Hierárquico:** Caso a renúncia supere R$ 2,2 bi, o Multiplicador (1.25) é a primeira alavanca de ajuste.
 """)
