@@ -51,7 +51,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# 2. MOTOR DE CÁLCULO (CORREÇÃO EXCLUSIVA DO BUG DE SENSIBILIDADE)
+# 2. MOTOR DE CÁLCULO (CORREÇÃO DA EQUALIZAÇÃO DE CENÁRIOS)
 # ─────────────────────────────────────────────────────────────
 
 def run_reti_engine(p):
@@ -64,20 +64,19 @@ def run_reti_engine(p):
     receita = p['rec_inicial']
     
     violation_last_year = False
-    # A variável m_fixo trava o parâmetro do cenário para o cálculo anual
-    m_fixo = p['mult_base'] 
-    f_penalidade = 0
-
+    m_base_cenario = p['mult_base'] 
+    
     for t in range(1, p['horizonte'] + 1):
         rec_ant = receita
         receita *= (1 + p['crescimento'])
         
-        # O multiplicador agora é derivado do cenário escolhido
+        # Ajuste paramétrico: a penalidade agora é proporcional, 
+        # garantindo que o ponto de partida (cenário) ainda influencie o resultado.
         if violation_last_year:
-            m_calculado = max(1.0, m_fixo - 0.15)
+            m_efetivo = max(1.0, m_base_cenario * 0.85) # Redução de 15% sobre a base do cenário
             f_penalidade = 0.5
         else:
-            m_calculado = m_fixo
+            m_efetivo = m_base_cenario
             f_penalidade = 0
         
         if receita <= 3.24: f_base = 3.5
@@ -88,8 +87,8 @@ def run_reti_engine(p):
         f = max(1.0, f_base - f_penalidade)
 
         pd_original = receita * p['intensidade_pd']
-        # pd_adicional agora responde corretamente às variações de m_calculado e elasticidade
-        pd_adicional = pd_original * abs(p['elasticidade']) * (m_calculado * f * ALIQUOTA)
+        # pd_adicional agora variará obrigatoriamente entre moderado e agressivo
+        pd_adicional = pd_original * abs(p['elasticidade']) * (m_efetivo * f * ALIQUOTA)
         pd_total = pd_original + pd_adicional
         
         if t + LAG < len(historico_maturacao): 
@@ -102,7 +101,7 @@ def run_reti_engine(p):
 
         if p['regime'] == "Lucro Presumido":
             base_orig = receita * PRESUNCAO
-            base_red = max(base_orig * 0.25, base_orig - (m_calculado * pd_total * f))
+            base_red = max(base_orig * 0.25, base_orig - (m_efetivo * pd_total * f))
             ren_unitaria = (base_orig - base_red) * ALIQUOTA if pode_usar else 0
         else:
             if p['intensidade_pd'] >= 0.15 and pode_usar:
@@ -117,7 +116,7 @@ def run_reti_engine(p):
 
         rows.append({
             "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M": m_calculado
+            "Saldo": ret_macro - ren_macro, "M_Efetivo": m_efetivo
         })
 
     df_res = pd.DataFrame(rows)
