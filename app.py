@@ -63,6 +63,11 @@ def simular_reti(params):
         F = fator_porte(receita)
 
         incentivo = params['multiplicador'] * F * ALIQUOTA
+
+        # 🔵 NOVO — transparência econômica
+        subsidio_efetivo = custo_relativo(incentivo)
+        fator_alavancagem = abs(params['elasticidade']) * subsidio_efetivo
+
         pd_extra = adicionalidade_pd(pd_base, params['elasticidade'], incentivo)
         pd_total = pd_base + pd_extra
 
@@ -107,7 +112,12 @@ def simular_reti(params):
             "Retorno": ret_macro,
             "Saldo": ret_macro - ren_macro,
             "Fator F": F,
-            "Pode Usar": pode
+            "Pode Usar": pode,
+
+            # 🔵 NOVO — auditabilidade explícita
+            "Incentivo": incentivo,
+            "Subsídio Efetivo": subsidio_efetivo,
+            "Fator Alavancagem": fator_alavancagem
         })
 
     df = pd.DataFrame(rows)
@@ -175,6 +185,9 @@ k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
 k3.metric("Intensidade P&D", f"{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}")
 k4.metric("Risco Fiscal", "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO")
 
+# 🔵 NOVO — explicação objetiva
+st.caption("Mecanismo: P&D adicional = ε × redução de custo (subsídio fiscal)")
+
 # GRÁFICOS
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo"))
@@ -185,7 +198,7 @@ fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
 st.plotly_chart(fig2, use_container_width=True)
 
-# MACRO
+# MACRO (INALTERADO)
 st.subheader("Impacto Macroeconômico")
 
 PIB = 10000
@@ -206,7 +219,7 @@ m1.metric("P&D / PIB (Atual)", "1.17%")
 m2.metric("P&D / PIB (com RETI)", f"{df['P&D/PIB_total'].iloc[-1]:.2%}")
 m3.metric("Δ P&D / PIB", f"{df['P&D/PIB_incremental'].iloc[-1]:.2%}")
 
-# SENSIBILIDADE
+# SENSIBILIDADE (INALTERADO)
 st.subheader("Intervalo de Resultados")
 
 custos = [c["Renúncia"].sum() for c in cenarios.values()]
@@ -215,7 +228,7 @@ c1, c2 = st.columns(2)
 c1.metric("Custo Médio", f"R$ {np.mean(custos):.2f} Bi",
           delta=f"{min(custos):.2f} – {max(custos):.2f}")
 
-# DIAGNÓSTICO
+# DIAGNÓSTICO (INALTERADO)
 st.subheader("Diagnóstico")
 
 if alavancagem > 1.5:
@@ -230,10 +243,20 @@ if df["Renúncia"].max() > params["teto_lrf"]:
 else:
     st.success("Sustentável fiscalmente")
 
-# LIMITAÇÕES
+# LIMITAÇÕES (INALTERADO)
 st.subheader("Nota Metodológica")
 st.caption("Modelo estrutural baseado em parâmetros da literatura. Resultados devem ser interpretados como cenários, não previsões pontuais.")
 
-# TABELA
-with st.expander("Dados detalhados"):
+# TABELA (expandida, não reduzida)
+with st.expander("Dados detalhados + variáveis do modelo"):
+    st.markdown("""
+**Novas variáveis adicionadas para auditabilidade:**
+
+- **Incentivo**: intensidade do benefício fiscal aplicado  
+- **Subsídio Efetivo**: redução percentual do custo do P&D  
+- **Fator Alavancagem**: ε × subsídio → impacto sobre investimento  
+
+**Leitura:**
+O RETI atua reduzindo o custo do P&D → empresas respondem via elasticidade → investimento adicional emerge.
+""")
     st.dataframe(df)
