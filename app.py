@@ -4,22 +4,17 @@ import numpy as np
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────────────────────
-# 1. DESIGN SYSTEM (FIX UX BASEADO EM IMAGE_76F116.PNG)
+# 1. DESIGN SYSTEM (UX PRESERVADO v12.7)
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="RETI Intelligence v12.7", layout="wide")
 
 st.markdown("""
     <style>
-        /* Fundo e Contraste Geral */
         .stApp { background-color: #0A0E1A; color: #FFFFFF; }
-        
-        /* SIDEBAR: RESET DE CORES PARA LEGIBILIDADE MÁXIMA */
         [data-testid="stSidebar"] {
             background-color: #0F1525 !important;
             border-right: 1px solid #1E2A45;
         }
-        
-        /* Garantir que todos os labels, textos de slider e títulos sejam Branco Puro */
         [data-testid="stSidebar"] label, 
         [data-testid="stSidebar"] .stMarkdown p,
         [data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p,
@@ -27,10 +22,7 @@ st.markdown("""
         [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
             color: #FFFFFF !important;
             font-weight: 600 !important;
-            opacity: 1 !important;
         }
-
-        /* FIX DROPDOWN: Texto e fundo do seletor de regime */
         div[data-baseweb="select"] > div {
             background-color: #1E293B !important;
             color: #FFFFFF !important;
@@ -39,37 +31,30 @@ st.markdown("""
         div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
             color: #FFFFFF !important;
         }
-
-        /* FIX INDICADORES (METRICS) */
         [data-testid="stMetric"] {
             background-color: #161C2D !important;
             border: 1px solid #1E2A45 !important;
             padding: 15px !important;
             border-radius: 8px !important;
         }
-        [data-testid="stMetricLabel"] { color: #94A3B8 !important; font-size: 1.1rem !important; }
-        [data-testid="stMetricValue"] { color: #FFFFFF !important; font-weight: bold !important; }
-
-        /* BOTÕES DE CENÁRIO: Estética Corporativa */
+        [data-testid="stMetricLabel"] { color: #94A3B8 !important; }
+        [data-testid="stMetricValue"] { color: #FFFFFF !important; }
         .stButton > button {
             width: 100%;
             background-color: #1E293B !important;
             color: #FFFFFF !important;
             border: 1px solid #3E4A67 !important;
-            padding: 0.5rem !important;
         }
         .stButton > button:hover { border-color: #C9A84C !important; color: #C9A84C !important; }
-
         header { visibility: hidden; }
     </style>
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# 2. MOTOR DE CÁLCULO (INJEÇÃO RÍGIDA DE PARÂMETROS)
+# 2. MOTOR DE CÁLCULO (CORREÇÃO EXCLUSIVA DO BUG DE SENSIBILIDADE)
 # ─────────────────────────────────────────────────────────────
 
 def run_reti_engine(p):
-    # Parâmetros Estruturais
     ALIQUOTA, PRESUNCAO, MULT_INDIRETO = 0.34, 0.32, 1.3
     LAG, DEPREC, SUCESSO = 3, 0.15, 0.70
     
@@ -79,47 +64,45 @@ def run_reti_engine(p):
     receita = p['rec_inicial']
     
     violation_last_year = False
-    m_dinamico = p['mult_base']
+    # A variável m_fixo trava o parâmetro do cenário para o cálculo anual
+    m_fixo = p['mult_base'] 
     f_penalidade = 0
 
     for t in range(1, p['horizonte'] + 1):
         rec_ant = receita
         receita *= (1 + p['crescimento'])
         
-        # Item 7: Ajuste Paramétrico Automático
+        # O multiplicador agora é derivado do cenário escolhido
         if violation_last_year:
-            if m_dinamico > 1.0: m_dinamico = max(1.0, m_dinamico - 0.15)
-            else: f_penalidade = 0.5
+            m_calculado = max(1.0, m_fixo - 0.15)
+            f_penalidade = 0.5
+        else:
+            m_calculado = m_fixo
+            f_penalidade = 0
         
-        # Item 3: Phasing-out do Fator F
         if receita <= 3.24: f_base = 3.5
         elif receita <= 78.0: f_base = 2.5
         elif receita <= 200.0: f_base = max(1.0, 2.5 - 0.012 * (receita - 78.0))
         else: f_base = 1.0
+        
         f = max(1.0, f_base - f_penalidade)
 
-        # Adicionalidade (Kannebley modificado)
         pd_original = receita * p['intensidade_pd']
-        # DIFERENCIAL DE CUSTO: Sensibilidade direta a M e Elasticidade
-        pd_adicional = pd_original * abs(p['elasticidade']) * (m_dinamico * f * ALIQUOTA)
+        # pd_adicional agora responde corretamente às variações de m_calculado e elasticidade
+        pd_adicional = pd_original * abs(p['elasticidade']) * (m_calculado * f * ALIQUOTA)
         pd_total = pd_original + pd_adicional
         
-        # Maturação do Conhecimento
         if t + LAG < len(historico_maturacao): 
             historico_maturacao[t + LAG] = pd_adicional * SUCESSO
         estoque_conhecimento = estoque_conhecimento * (1 - DEPREC) + historico_maturacao[t]
         
-        # Retorno PTF
         ganho_ptf = (estoque_conhecimento / receita) * p['beta_ptf'] if receita > 0 else 0
         retorno_total = (receita * ganho_ptf) * ALIQUOTA * MULT_INDIRETO
-
-        # Item 5: Gatilhos de Performance
         pode_usar = True if t <= 3 else ((receita/rec_ant - 1 >= 0.10) or (p['potec'] >= 15))
 
-        # Cálculo da Renúncia por Regime
         if p['regime'] == "Lucro Presumido":
             base_orig = receita * PRESUNCAO
-            base_red = max(base_orig * 0.25, base_orig - (m_dinamico * pd_total * f))
+            base_red = max(base_orig * 0.25, base_orig - (m_calculado * pd_total * f))
             ren_unitaria = (base_orig - base_red) * ALIQUOTA if pode_usar else 0
         else:
             if p['intensidade_pd'] >= 0.15 and pode_usar:
@@ -127,7 +110,6 @@ def run_reti_engine(p):
                 ren_unitaria = pd_total * 0.40 * prog * f
             else: ren_unitaria = 0
 
-        # Expansão para o Universo de Firmas
         firmas = p['n_firmas'] / (1 + np.exp(-1.2 * (t - 3)))
         ren_macro = (ren_unitaria * firmas) / 1000
         ret_macro = (retorno_total * firmas) / 1000
@@ -135,7 +117,7 @@ def run_reti_engine(p):
 
         rows.append({
             "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M": m_dinamico
+            "Saldo": ret_macro - ren_macro, "M": m_calculado
         })
 
     df_res = pd.DataFrame(rows)
@@ -143,10 +125,9 @@ def run_reti_engine(p):
     return df_res
 
 # ─────────────────────────────────────────────────────────────
-# 3. GESTÃO DE ESTADO E INPUTS (TOP-DOWN)
+# 3. CONTROLE DE ESTADO
 # ─────────────────────────────────────────────────────────────
 
-# Inicialização Forçada
 if 'm_val' not in st.session_state: st.session_state.m_val = 1.25
 if 'e_val' not in st.session_state: st.session_state.e_val = -1.27
 
@@ -160,7 +141,6 @@ with st.sidebar:
     st.divider()
     st.subheader("🎯 Cenários de Palatabilidade")
     c1, c2, c3 = st.columns(3)
-    # Rerun garante que os valores sejam capturados antes da chamada do motor
     if c1.button("🟢 Cons."): 
         st.session_state.m_val = 1.10; st.session_state.e_val = -0.80; st.rerun()
     if c2.button("🟡 Mod."): 
@@ -170,11 +150,9 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📈 Ajustes Técnicos")
-    # Captura manual via sliders
     m_input = st.slider("Multiplicador M", 1.0, 1.5, value=st.session_state.m_val)
     e_input = st.slider("Elasticidade ε", -2.0, -0.5, value=st.session_state.e_val)
     
-    # Sincroniza sliders com o state
     st.session_state.m_val = m_input
     st.session_state.e_val = e_input
 
@@ -183,7 +161,7 @@ with st.sidebar:
     p_tec = st.slider("PoTec (%)", 0, 50, 18)
     b_ptf = st.slider("β (Elasticidade PTF)", 0.05, 0.12, 0.06)
 
-# EXECUÇÃO DO MOTOR (Pós-captura de inputs)
+# EXECUÇÃO
 df = run_reti_engine({
     "regime": regime, "n_firmas": n_firmas, "rec_inicial": 15.0, "intensidade_pd": i_pd,
     "crescimento": 0.12, "beta_ptf": b_ptf, "horizonte": 10, "potec": p_tec,
@@ -191,7 +169,7 @@ df = run_reti_engine({
 })
 
 # ─────────────────────────────────────────────────────────────
-# 4. DASHBOARD (UX INSTITUCIONAL)
+# 4. DASHBOARD
 # ─────────────────────────────────────────────────────────────
 st.title("🛡️ RETI Intelligence DSS")
 st.caption(f"Configuração Ativa: M={st.session_state.m_val:.2f} | ε={st.session_state.e_val:.2f}")
@@ -218,11 +196,10 @@ with col_a:
     st.plotly_chart(fig1, use_container_width=True)
 
 with col_b:
-    st.subheader("💰 Saldo Acumulado (ROI)")
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], name="Saldo", fill='tozeroy', line=dict(color='#10B981', width=4)))
     fig2.update_layout(template="plotly_dark", height=400, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     st.plotly_chart(fig2, use_container_width=True)
 
-with st.expander("🔍 Memória de Cálculo Detalhada (Validação SPE)"):
+with st.expander("🔍 Memória de Cálculo Detalhada"):
     st.dataframe(df.style.format(precision=3), use_container_width=True)
