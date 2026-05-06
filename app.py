@@ -103,7 +103,7 @@ def simular_reti(params):
 
         delta_ptf = BETA_PTF * delta_int
 
-        # ROI fiscal decomposto
+        # ROI fiscal (mantido, mas não mais central)
         ret_base = receita * delta_ptf * ALIQUOTA
         ret_ind = ret_base * (MULT_INDIRETO - 1)
         ret_est = estoque * 0.01
@@ -113,6 +113,8 @@ def simular_reti(params):
 
         rows.append({
             "Ano": t,
+            "Receita": receita,
+            "P&D Total": pd_total,
             "Renúncia": ren_macro,
             "Retorno": ret_macro,
             "Saldo": ret_macro - ren_macro,
@@ -172,52 +174,37 @@ df = hist[-1][2]
 violou = hist[-1][3]
 
 # ─────────────────────────────────────────────
-# HEADER INSTITUCIONAL
+# HEADER
 # ─────────────────────────────────────────────
 st.title("RETI DSS — Avaliação Fiscal e Econômica")
 
 st.markdown("""
-### Modelo de Simulação Integrada
-
-Avaliação do impacto do RETI sobre investimento em P&D, produtividade (PTF) 
-e sustentabilidade fiscal, considerando adicionalidade e restrições da LRF.
+Simulação do impacto do RETI sobre investimento em P&D, produtividade (PTF) 
+e sustentabilidade fiscal.
 """)
 
 # ─────────────────────────────────────────────
-# DEFINIÇÕES
+# KPIs (NOVO PADRÃO FAZENDA)
 # ─────────────────────────────────────────────
-with st.expander("📘 Definições do Modelo"):
-    st.markdown("""
-- **Renúncia Fiscal**: custo do incentivo  
-- **Retorno (PTF)**: arrecadação adicional via produtividade  
-- **Fator F**: ajuste por porte da firma  
-- **Elasticidade**: resposta do P&D ao incentivo  
-- **PoTec**: proporção de pessoal técnico  
-""")
+k1, k2, k3, k4 = st.columns(4)
+
+custo_total = df["Renúncia"].sum()
+retorno_total = df["Retorno"].sum()
+pd_total = df["P&D Total"].sum()
+
+k1.metric("Custo Total (10a)", f"R$ {custo_total:.2f} Bi")
+
+alavancagem = pd_total / custo_total if custo_total > 0 else 0
+k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
+
+intensidade_final = df["P&D Total"].iloc[-1] / df["Receita"].iloc[-1]
+k3.metric("Intensidade P&D", f"{intensidade_final:.2%}")
+
+risco = "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO"
+k4.metric("Risco Fiscal", risco)
 
 # ─────────────────────────────────────────────
-# KPIs
-# ─────────────────────────────────────────────
-k1, k2, k3 = st.columns(3)
-
-k1.metric("Custo Total (10a)", f"R$ {df['Renúncia'].sum():.2f} Bi")
-k2.metric("Retorno Total", f"R$ {df['Retorno'].sum():.2f} Bi")
-
-payback = df[df["Acumulado"] > 0]
-k3.metric("Payback", payback["Ano"].min() if not payback.empty else "N/A")
-
-# ─────────────────────────────────────────────
-# ÁRVORE DE DECISÃO
-# ─────────────────────────────────────────────
-st.subheader("🌳 Lógica de Decisão Fiscal")
-
-if violou:
-    st.error("Violação da LRF → ajuste paramétrico aplicado")
-else:
-    st.success("Regime sustentável dentro da LRF")
-
-# ─────────────────────────────────────────────
-# GRÁFICOS
+# GRÁFICOS (mantidos)
 # ─────────────────────────────────────────────
 st.subheader("📊 Dinâmica Fiscal")
 
@@ -233,27 +220,41 @@ fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
 st.plotly_chart(fig2, use_container_width=True)
 
 # ─────────────────────────────────────────────
-# DIAGNÓSTICO
+# DIAGNÓSTICO (NOVO)
 # ─────────────────────────────────────────────
-st.subheader("🧮 Diagnóstico")
+st.subheader("🧮 Diagnóstico do Regime")
 
-custo = df["Renúncia"].sum()
-ret = df["Retorno"].sum()
-
-if ret > custo:
-    st.success("ROI fiscal positivo")
+if alavancagem > 1.5:
+    st.success("Alta adicionalidade: forte indução de P&D privado")
+elif alavancagem > 1.0:
+    st.info("Adicionalidade moderada")
 else:
-    st.warning("ROI fiscal negativo")
+    st.warning("Baixa adicionalidade")
+
+if df["Renúncia"].max() > params["teto_lrf"]:
+    st.error("Pressão fiscal: excede teto da LRF")
+else:
+    st.success("Sustentabilidade fiscal preservada")
+
+crescimento_pd = (df["P&D Total"].iloc[-1] / df["P&D Total"].iloc[0]) - 1
+st.info(f"Expansão do investimento em P&D: {crescimento_pd:.2%}")
 
 # ─────────────────────────────────────────────
-# INTERPRETAÇÃO
+# INTERPRETAÇÃO (REPOSICIONADA)
 # ─────────────────────────────────────────────
 st.subheader("🧠 Interpretação Econômica")
 
 st.markdown(f"""
-- Custo total: **R$ {custo:.2f} Bi**  
-- Retorno estimado: **R$ {ret:.2f} Bi**  
-- Resultado: {'ganho líquido' if ret > custo else 'custo líquido'}  
+O RETI deve ser avaliado como instrumento de indução tecnológica, não como mecanismo de retorno fiscal imediato.
+
+- Custo total: **R$ {custo_total:.2f} Bi**  
+- Alavancagem de investimento: **{alavancagem:.2f}x**  
+- Intensidade tecnológica final: **{intensidade_final:.2%}**
+
+**Leitura institucional:**
+- O critério central é a capacidade de induzir investimento privado  
+- A sustentabilidade fiscal é garantida pelo controle do custo anual  
+- O retorno ocorre predominantemente no longo prazo via produtividade  
 """)
 
 # ─────────────────────────────────────────────
