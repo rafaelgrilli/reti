@@ -3,65 +3,31 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# ─────────────────────────────────────────────────────────────
-# 1. DESIGN SYSTEM (CORREÇÃO DE FONTES NA SIDEBAR)
-# ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="RETI Intelligence v12.5", layout="wide")
+# 1. DESIGN SYSTEM
+st.set_page_config(page_title="RETI Intelligence v12.6", layout="wide")
 
 st.markdown("""
     <style>
         .stApp { background-color: #0A0E1A; color: #FFFFFF; }
-        
-        [data-testid="stSidebar"] {
-            background-color: #0F1525 !important;
-            border-right: 1px solid #1E2A45;
-        }
-        
-        /* Forçar cor branca em absolutamente todos os textos da sidebar */
-        [data-testid="stSidebar"] * {
-            color: #FFFFFF !important;
-        }
-
-        /* Inputs e Selectboxes */
-        div[data-baseweb="select"] > div, 
-        div[data-baseweb="input"] > div {
-            background-color: #1E293B !important;
-            color: white !important;
-        }
-        
-        [data-testid="stMetric"] {
-            background-color: #161C2D !important;
-            border: 1px solid #1E2A45 !important;
-            border-left: 5px solid #C9A84C !important;
-        }
-        [data-testid="stMetricLabel"] { color: #94A3B8 !important; }
-        [data-testid="stMetricValue"] { color: #FFFFFF !important; }
-
+        [data-testid="stSidebar"] { background-color: #0F1525 !important; border-right: 1px solid #1E2A45; }
+        [data-testid="stSidebar"] * { color: #FFFFFF !important; }
+        .stButton > button { width: 100%; background-color: #1E293B !important; border: 1px solid #3E4A67 !important; }
+        .stButton > button:hover { border-color: #C9A84C !important; color: #C9A84C !important; }
         header { visibility: hidden; }
     </style>
     """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────
 # 2. MOTOR DE CÁLCULO
-# ─────────────────────────────────────────────────────────────
-
 def run_reti_engine(p):
     ALIQUOTA, PRESUNCAO, MULT_INDIRETO = 0.34, 0.32, 1.3
     LAG, DEPREC, SUCESSO = 3, 0.15, 0.70
-    
     rows = []
-    estoque_conhecimento = 0
+    estoque_conhecimento, receita = 0, p['rec_inicial']
     historico_maturacao = np.zeros(p['horizonte'] + LAG + 10)
-    receita = p['rec_inicial']
-    
-    violation_last_year = False
-    m_dinamico = p['mult_base']
-    f_penalidade = 0
+    violation_last_year, m_dinamico, f_penalidade = False, p['mult_base'], 0
 
     for t in range(1, p['horizonte'] + 1):
-        rec_ant = receita
-        receita *= (1 + p['crescimento'])
-        
+        rec_ant, receita = receita, receita * (1 + p['crescimento'])
         if violation_last_year:
             if m_dinamico > 1.0: m_dinamico = max(1.0, m_dinamico - 0.15)
             else: f_penalidade = 0.5
@@ -76,9 +42,7 @@ def run_reti_engine(p):
         pd_adicional = pd_original * abs(p['elasticidade']) * (m_dinamico * f * ALIQUOTA)
         pd_total = pd_original + pd_adicional
         
-        if t + LAG < len(historico_maturacao): 
-            historico_maturacao[t + LAG] = pd_adicional * SUCESSO
-            
+        if t + LAG < len(historico_maturacao): historico_maturacao[t + LAG] = pd_adicional * SUCESSO
         estoque_conhecimento = estoque_conhecimento * (1 - DEPREC) + historico_maturacao[t]
         ganho_ptf = (estoque_conhecimento / receita) * p['beta_ptf'] if receita > 0 else 0
         retorno_total = (receita * ganho_ptf) * ALIQUOTA * MULT_INDIRETO
@@ -96,101 +60,72 @@ def run_reti_engine(p):
             else: renuncia_unitaria = 0
 
         firmas = p['n_firmas'] / (1 + np.exp(-1.2 * (t - 3)))
-        ren_macro = (renuncia_unitaria * firmas) / 1000
-        ret_macro = (retorno_total * firmas) / 1000
+        ren_macro, ret_macro = (renuncia_unitaria * firmas) / 1000, (retorno_total * firmas) / 1000
         violation_last_year = ren_macro > p['teto_lrf']
+        rows.append({"Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, "Saldo": ret_macro - ren_macro})
 
-        rows.append({
-            "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M": m_dinamico
-        })
+    return pd.DataFrame(rows)
 
-    df_res = pd.DataFrame(rows)
-    df_res["Acumulado"] = df_res["Saldo"].cumsum()
-    return df_res
+# 3. INTERFACE
+if 'm_val' not in st.session_state: st.session_state.m_val = 1.25
+if 'e_val' not in st.session_state: st.session_state.e_val = -1.27
 
-# ─────────────────────────────────────────────────────────────
-# 3. INTERFACE E DASHBOARD
-# ─────────────────────────────────────────────────────────────
-
-if 'm_base' not in st.session_state: st.session_state.m_base = 1.25
-if 'elast' not in st.session_state: st.session_state.elast = -1.27
+def set_params(m, e):
+    st.session_state.m_val, st.session_state.e_val = m, e
 
 with st.sidebar:
     st.title("🛡️ Parâmetros RETI")
+    n_firmas = st.number_input("Universo de Firmas", value=4500, step=100)
+    regime = st.selectbox("Regime Tributário", ["Lucro Presumido", "RETI-SME"])
+    t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
     
     st.subheader("🎯 Cenários")
     c1, c2, c3 = st.columns(3)
-    if c1.button("🟢 Cons."): 
-        st.session_state.m_base = 1.10; st.session_state.elast = -0.80; st.rerun()
-    if c2.button("🟡 Mod."): 
-        st.session_state.m_base = 1.25; st.session_state.elast = -1.27; st.rerun()
-    if c3.button("🟠 Agres."): 
-        st.session_state.m_base = 1.45; st.session_state.elast = -1.80; st.rerun()
+    c1.button("🟢 Cons.", on_click=set_params, args=(1.10, -0.80))
+    c2.button("🟡 Mod.", on_click=set_params, args=(1.25, -1.27))
+    c3.button("🟠 Agres.", on_click=set_params, args=(1.45, -1.80))
 
-    st.divider()
-    regime = st.selectbox("Regime Tributário", ["Lucro Presumido", "Simples Nacional (RETI-SME)"])
-    n_firmas = st.number_input("Universo de Firmas", value=4500)
-    t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
-    
-    st.subheader("🏢 Perfil da Firma")
+    st.subheader("📈 Ajustes")
+    m_ui = st.slider("M", 1.0, 1.5, st.session_state.m_val, key="m_s")
+    e_ui = st.slider("ε", -2.0, -0.5, st.session_state.e_val, key="e_s")
+    st.session_state.m_val, st.session_state.e_val = m_ui, e_ui
+
     i_pd = st.slider("Intensidade P&D", 0.01, 0.40, 0.07)
     p_tec = st.slider("PoTec (%)", 0, 50, 18)
-    
-    st.subheader("📈 Macro SPE")
-    b_ptf = st.slider("β (Elasticidade PTF)", 0.05, 0.12, 0.06)
-    
-    # Sliders vinculados ao Session State para refletir a mudança dos botões
-    m_base = st.slider("Multiplicador M", 1.0, 1.5, value=st.session_state.m_base, key="m_slider")
-    elast = st.slider("Elasticidade ε", -2.0, -0.5, value=st.session_state.elast, key="e_slider")
-    
-    # Atualiza o state se o usuário mover o slider manualmente
-    st.session_state.m_base = m_base
-    st.session_state.elast = elast
+    b_ptf = st.slider("β (PTF)", 0.05, 0.12, 0.06)
 
-# Execução do Motor
 df = run_reti_engine({
     "regime": regime, "n_firmas": n_firmas, "rec_inicial": 15.0, "intensidade_pd": i_pd,
     "crescimento": 0.12, "beta_ptf": b_ptf, "horizonte": 10, "potec": p_tec,
-    "teto_lrf": t_lrf, "mult_base": st.session_state.m_base, "elasticidade": st.session_state.elast
+    "teto_lrf": t_lrf, "mult_base": st.session_state.m_val, "elasticidade": st.session_state.e_val
 })
 
-# Painel de KPIs
 st.title("🛡️ RETI Intelligence DSS")
-st.caption("Decision Support System | Protocolo SPE/MF & RFB v12.5")
+st.caption(f"Configuração: M={st.session_state.m_val:.2f} | ε={st.session_state.e_val:.2f}")
 
 k1, k2, k3, k4 = st.columns(4)
-total_ren = df["Renúncia"].sum()
-total_ret = df["Retorno"].sum()
-
-payback_ano = "N/A"
-if "Acumulado" in df.columns:
-    pb_check = df[df["Acumulado"] > 0]
-    if not pb_check.empty:
-        payback_ano = int(pb_check["Ano"].min())
+total_ren, total_ret = df["Renúncia"].sum(), df["Retorno"].sum()
+pb_check = df[df["Saldo"].cumsum() > 0]
+payback = pb_check["Ano"].min() if not pb_check.empty else "N/A"
 
 k1.metric("Custo Total (10a)", f"R$ {total_ren:.2f} Bi")
 k2.metric("Retorno PIB (PTF)", f"R$ {total_ret:.2f} Bi")
-k3.metric("Payback Fiscal", f"Ano {payback_ano}")
-k4.metric("Status LRF", "CONFORME" if df["Renúncia"].max() <= t_lrf else "AJUSTADO")
+k3.metric("Payback Fiscal", f"Ano {payback}")
+k4.metric("Status LRF", "CONFORME" if df["Renúncia"].max() <= t_lrf else "LIMITADO")
 
-col_a, col_b = st.columns(2)
-with col_a:
-    st.subheader("📅 Fluxo Anual (LRF)")
-    fig1 = go.Figure()
-    fig1.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo", line=dict(color='#EF4444', width=4)))
-    fig1.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno", line=dict(color='#2BBFCE', width=4)))
-    fig1.add_hline(y=t_lrf, line_dash="dash", line_color="#C9A84C", annotation_text="Teto LRF")
-    fig1.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig1, use_container_width=True)
-
-with col_b:
-    st.subheader("💰 Saldo Acumulado (ROI)")
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], name="Saldo", fill='tozeroy', line=dict(color='#10B981', width=4), fillcolor='rgba(16, 185, 129, 0.2)'))
-    fig2.add_hline(y=0, line_color="#FFFFFF")
-    fig2.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig2, use_container_width=True)
+ca, cb = st.columns(2)
+with ca:
+    f1 = go.Figure()
+    f1.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo", line=dict(color='#EF4444', width=3)))
+    f1.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno", line=dict(color='#2BBFCE', width=3)))
+    f1.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(f1, use_container_width=True)
+with cb:
+    df["Acumulado"] = (df["Retorno"] - df["Renúncia"]).cumsum()
+    f2 = go.Figure()
+    f2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], name="ROI", fill='tozeroy', line=dict(color='#10B981', width=3)))
+    f2.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(f2, use_container_width=True)
 
 with st.expander("🔍 Memória de Cálculo Detalhada"):
     st.dataframe(df.style.format(precision=3), use_container_width=True)
