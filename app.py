@@ -4,40 +4,43 @@ import numpy as np
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────────────────────
-# 1. DESIGN SYSTEM (CSS BLINDADO PARA LEGIBILIDADE)
+# 1. DESIGN SYSTEM (FOCO EM CONTRASTE E LEGIBILIDADE)
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="RETI Intelligence v12.5", layout="wide")
+st.set_page_config(page_title="RETI Intelligence v13.0", layout="wide")
 
 st.markdown("""
     <style>
         /* Fundo Geral */
         .stApp { background-color: #0A0E1A; color: #FFFFFF; }
         
-        /* BARRA LATERAL: Forçar fundo escuro e texto branco em TUDO */
+        /* BARRA LATERAL: Fundo escuro e texto branco em TUDO */
         [data-testid="stSidebar"] {
             background-color: #0F1525 !important;
             border-right: 1px solid #1E2A45;
         }
         
-        /* Seletores de texto da Sidebar */
-        [data-testid="stSidebar"] .stText, 
-        [data-testid="stSidebar"] label, 
+        /* Forçar cor branca em todos os labels e parágrafos da sidebar */
+        [data-testid="stSidebar"] label p, 
         [data-testid="stSidebar"] .stMarkdown p,
-        [data-testid="stSidebar"] h1, 
-        [data-testid="stSidebar"] h2, 
-        [data-testid="stSidebar"] h3 {
+        [data-testid="stSidebar"] span {
             color: #FFFFFF !important;
             font-weight: 600 !important;
         }
 
-        /* Inputs e Selectboxes */
-        div[data-baseweb="select"] > div, 
-        div[data-baseweb="input"] > div {
+        /* CAIXA UNIVERSO DE FIRMAS E INPUTS: Fonte Branca */
+        [data-testid="stSidebar"] input {
+            color: #FFFFFF !important;
+            background-color: #1E293B !important;
+            -webkit-text-fill-color: #FFFFFF !important;
+        }
+        
+        /* Dropdowns e Selectboxes */
+        div[data-baseweb="select"] > div {
             background-color: #1E293B !important;
             color: white !important;
         }
-        
-        /* Cards de Métrica */
+
+        /* CARDS DE MÉTRICA */
         [data-testid="stMetric"] {
             background-color: #161C2D !important;
             border: 1px solid #1E2A45 !important;
@@ -117,18 +120,18 @@ def run_reti_engine(p):
 
         rows.append({
             "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M": m_dinamico
+            "Saldo": ret_macro - ren_macro, "M": m_dinamico, "LRF_Violada": violation_last_year
         })
 
     df_res = pd.DataFrame(rows)
-    df_res["Acumulado"] = df_res["Saldo"].cumsum()
+    df_res["Acumulado"] = (df_res["Retorno"] - df_res["Renúncia"]).cumsum()
     return df_res
 
 # ─────────────────────────────────────────────────────────────
 # 3. INTERFACE E DASHBOARD
 # ─────────────────────────────────────────────────────────────
 
-# Inicialização do Session State
+# Inicialização do Session State para vincular Sliders e Botões
 if 'm_base' not in st.session_state: st.session_state.m_base = 1.25
 if 'elast' not in st.session_state: st.session_state.elast = -1.27
 
@@ -146,8 +149,8 @@ with st.sidebar:
 
     st.divider()
     regime = st.selectbox("Regime Tributário", ["Lucro Presumido", "Simples Nacional (RETI-SME)"])
-    n_firmas = st.number_input("Universo de Firmas", value=4500)
-    t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
+    n_firmas = st.number_input("Universo de Firmas", value=4500, key="n_firmas_input")
+    t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 10.0, 4.0) # Aumentado para diferenciar cenários
     
     st.subheader("🏢 Perfil da Firma")
     i_pd = st.slider("Intensidade P&D", 0.01, 0.40, 0.07)
@@ -167,23 +170,20 @@ df = run_reti_engine({
 
 # KPIs
 st.title("🛡️ RETI Intelligence DSS")
-st.caption("Decision Support System | Protocolo SPE/MF & RFB v12.5")
+st.caption("Decision Support System | Protocolo SPE/MF & RFB v13.0")
 
 k1, k2, k3, k4 = st.columns(4)
 total_ren = df["Renúncia"].sum()
 total_ret = df["Retorno"].sum()
 
-# Cálculo de Payback Seguro
-payback_ano = "N/A"
-if "Acumulado" in df.columns:
-    pb_check = df[df["Acumulado"] > 0]
-    if not pb_check.empty:
-        payback_ano = pb_check["Ano"].min()
+# Cálculo de Payback
+pb_check = df[df["Acumulado"] > 0]
+payback_ano = pb_check["Ano"].min() if not pb_check.empty else "N/A"
 
 k1.metric("Custo Total (10a)", f"R$ {total_ren:.2f} Bi")
 k2.metric("Retorno PIB (PTF)", f"R$ {total_ret:.2f} Bi")
 k3.metric("Payback Fiscal", f"Ano {payback_ano}")
-k4.metric("Status LRF", "CONFORME" if df["Renúncia"].max() <= t_lrf else "AJUSTADO")
+k4.metric("Status LRF", "CONFORME" if not df["LRF_Violada"].any() else "AJUSTADO")
 
 # GRÁFICOS
 col_a, col_b = st.columns(2)
@@ -203,6 +203,10 @@ with col_b:
     fig2.add_hline(y=0, line_color="#FFFFFF")
     fig2.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     st.plotly_chart(fig2, use_container_width=True)
+
+# Alerta de Ajuste Paramétrico (Item 7)
+if df["LRF_Violada"].any():
+    st.warning(f"⚠️ **Ajuste Ativado:** O teto LRF foi atingido. O motor reduziu o multiplicador M para {df['M'].iloc[-1]:.2f} para proteger o orçamento.")
 
 with st.expander("🔍 Memória de Cálculo Detalhada"):
     st.dataframe(df.style.format(precision=3), use_container_width=True)
