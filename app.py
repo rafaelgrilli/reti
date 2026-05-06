@@ -4,32 +4,27 @@ import numpy as np
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────────────────────
-# 1. DESIGN SYSTEM (FOCO EM LEGIBILIDADE E CONTRASTE)
+# 1. DESIGN SYSTEM (CONTRASTE TOTAL E LEGIBILIDADE)
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="RETI Intelligence v11.0", layout="wide")
+st.set_page_config(page_title="RETI Intelligence v11.50", layout="wide")
 
-# CSS para garantir que NADA fique ilegível (Sidebar e Cards)
+# CSS agressivo para garantir fonte branca na sidebar e contraste nos cards
 st.markdown("""
     <style>
-        /* Fundo e Texto Principal */
         .stApp { background-color: #0A0E1A; color: #FFFFFF; }
         
-        /* SIDEBAR: Fundo escuro sólido com texto branco puro */
-        [data-testid="stSidebar"] {
-            background-color: #111827 !important;
-            border-right: 1px solid #1F2937;
-        }
-        [data-testid="stSidebar"] .stMarkdown p, [data-testid="stSidebar"] label {
-            color: #FFFFFF !important;
-            font-weight: 600 !important;
-            font-size: 14px !important;
-        }
+        /* FORÇAR BRANCO EM TUDO NA SIDEBAR */
+        [data-testid="stSidebar"] { background-color: #111827 !important; border-right: 1px solid #1F2937; }
+        [data-testid="stSidebar"] * { color: #FFFFFF !important; }
+        [data-testid="stSidebar"] .stSlider label { font-weight: 700 !important; font-size: 14px !important; }
         
-        /* Correção da Barra Superior do Streamlit */
+        /* Ajuste de inputs numéricos na sidebar */
+        [data-testid="stSidebar"] input { background-color: #1F2937 !important; color: white !important; }
+
         header { visibility: hidden; }
         .block-container { padding-top: 1rem !important; }
 
-        /* CARDS DE MÉTRICA: Contraste Azul/Ouro */
+        /* CARDS DE MÉTRICA */
         [data-testid="stMetric"] {
             background-color: #1E293B !important;
             border: 1px solid #334155 !important;
@@ -40,14 +35,13 @@ st.markdown("""
         [data-testid="stMetricLabel"] { color: #94A3B8 !important; font-size: 13px !important; }
         [data-testid="stMetricValue"] { color: #FFFFFF !important; font-size: 24px !important; font-weight: 700 !important; }
 
-        /* CAIXAS DE INSIGHT */
+        /* INSIGHTS */
         .insight-box {
             padding: 15px; margin: 10px 0px; border-radius: 8px; border-left: 6px solid;
             background-color: #161E2E; color: #FFFFFF !important; font-size: 14px;
         }
         .insight-red { border-color: #EF4444; }
         .insight-green { border-color: #10B981; }
-        .insight-blue { border-color: #3B82F6; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -84,10 +78,9 @@ def run_reti_engine(p):
         else: f_base = 1.0
         f = max(1.0, f_base - f_penalidade)
         
-        # Módulo Anti-Arbitragem (Item 5)
         if p['intensidade_pd'] < 0.05: f = max(1.0, f - 1.0)
 
-        # Adicionalidade (Kannebley -1.27)
+        # Adicionalidade (Kannebley -1.27) - USANDO O PARÂMETRO DE ELASTICIDADE
         pd_original = receita * p['intensidade_pd']
         pd_adicional = pd_original * abs(p['elasticidade']) * (m_dinamico * f * ALIQUOTA)
         pd_total = pd_original + pd_adicional
@@ -97,34 +90,27 @@ def run_reti_engine(p):
         estoque_conhecimento = estoque_conhecimento * (1 - DEPREC) + historico_maturacao[t]
         ganho_ptf = (estoque_conhecimento / receita) * p['beta_ptf'] if receita > 0 else 0
         
-        # Retorno Fiscal Total (Item 4.2)
         retorno_total = (receita * ganho_ptf) * ALIQUOTA * MULT_INDIRETO
 
         # Gatilhos de Performance (Item 5)
-        pode_usar = True if t <= 3 else ((receita/rec_ant - 1 >= 0.10) or (p['potec'] >= 15) or (p['patente'] <= t))
+        pode_usar = True if t <= 3 else ((receita/rec_ant - 1 >= 0.10) or (p['potec'] >= 15))
 
         # Cálculo da Renúncia (Item 3 e 6)
         if p['regime'] == "Lucro Presumido":
             base_orig = receita * PRESUNCAO
-            # FÓRMULA ITEM 3: Base = (Rec * 0.32) - (M * PD * F)
             base_red = max(base_orig * 0.25, base_orig - (m_dinamico * pd_total * f))
             renuncia_unitaria = (base_orig - base_red) * ALIQUOTA if pode_usar else 0
         else:
-            # RETI-SME (Item 6): Threshold 15%
             if p['intensidade_pd'] >= 0.15 and pode_usar:
                 prog = min(p['intensidade_pd'], 0.30) / 0.30
                 renuncia_unitaria = pd_total * 0.40 * prog * f
             else: renuncia_unitaria = 0
 
-        # Curva de Adesão Sigmóide
         firmas = p['n_firmas'] / (1 + np.exp(-1.2 * (t - 3)))
         ren_macro, ret_macro = (renuncia_unitaria * firmas) / 1000, (retorno_total * firmas) / 1000
         violation_last_year = ren_macro > p['teto_lrf']
 
-        rows.append({
-            "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M": m_dinamico, "F": f
-        })
+        rows.append({"Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, "Saldo": ret_macro - ren_macro, "M": m_dinamico})
 
     df = pd.DataFrame(rows)
     df["Acumulado"] = df["Saldo"].cumsum()
@@ -134,21 +120,21 @@ def run_reti_engine(p):
 # 3. INTERFACE E DASHBOARD
 # ─────────────────────────────────────────────────────────────
 
-# Inicialização de Session State para os Botões de Palatabilidade
+# Inicialização de Session State para os Botões
 if 'm_val' not in st.session_state: st.session_state.m_val = 1.25
 if 'e_val' not in st.session_state: st.session_state.e_val = -1.27
 
 with st.sidebar:
     st.title("🛡️ Parâmetros RETI")
     
-    st.subheader("🎯 Palatabilidade Fiscal")
+    st.subheader("🎯 Cenários de Palatabilidade")
     c1, c2, c3 = st.columns(3)
     if c1.button("🟢 Cons."): 
-        st.session_state.m_val = 1.10; st.session_state.e_val = -0.90; st.rerun()
+        st.session_state.m_val = 1.10; st.session_state.e_val = -0.80; st.rerun()
     if c2.button("🟡 Mod."): 
         st.session_state.m_val = 1.25; st.session_state.e_val = -1.27; st.rerun()
     if c3.button("🟠 Agres."): 
-        st.session_state.m_val = 1.40; st.session_state.e_val = -1.60; st.rerun()
+        st.session_state.m_val = 1.45; st.session_state.e_val = -1.80; st.rerun()
 
     st.divider()
     regime = st.selectbox("Regime Tributário", ["Lucro Presumido", "Simples Nacional (RETI-SME)"])
@@ -161,6 +147,7 @@ with st.sidebar:
     
     st.subheader("📈 Macro SPE")
     b_ptf = st.slider("β (Elasticidade PTF)", 0.05, 0.12, 0.06)
+    # Sliders vinculados ao session state para os botões funcionarem
     m_base = st.slider("Multiplicador M", 1.0, 1.5, st.session_state.m_val)
     elast = st.slider("Elasticidade ε", -2.0, -0.5, st.session_state.e_val)
 
@@ -168,12 +155,12 @@ with st.sidebar:
 df = run_reti_engine({
     "regime": regime, "n_firmas": n_firmas, "rec_inicial": 15.0, "intensidade_pd": i_pd,
     "crescimento": 0.12, "beta_ptf": b_ptf, "horizonte": 10, "potec": p_tec,
-    "patente": 3, "teto_lrf": t_lrf, "mult_base": m_base, "elasticidade": elast
+    "teto_lrf": t_lrf, "mult_base": m_base, "elasticidade": elast
 })
 
 # KPIs
 st.title("🛡️ RETI Intelligence DSS")
-st.caption("Decision Support System | Protocolo SPE/MF & RFB v11.0")
+st.caption("Decision Support System | Protocolo SPE/MF & RFB v11.50")
 
 k1, k2, k3, k4 = st.columns(4)
 total_ren = df["Renúncia"].sum()
@@ -207,13 +194,10 @@ with col_b:
 
 # ANÁLISE EXECUTIVA
 st.subheader("🧠 Análise de Cenário")
-if regime == "Simples Nacional (RETI-SME)" and i_pd < 0.15:
-    st.markdown(f"<div class='insight-box insight-red'><b>BLOQUEIO ITEM 6:</b> Intensidade de P&D abaixo de 15%. Firma inelegível ao Voucher no Simples.</div>", unsafe_allow_html=True)
-
 if df["Renúncia"].max() > t_lrf:
-    st.markdown(f"<div class='insight-box insight-red'><b>AJUSTE ITEM 7:</b> Teto LRF atingido. Multiplicador M reduzido para {df['M'].iloc[-1]:.2f} para garantir neutralidade.</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='insight-box insight-red'><b>⚠️ AJUSTE ITEM 7:</b> Teto LRF atingido. O motor reduziu o multiplicador para {df['M'].iloc[-1]:.2f} para estabilizar a curva.</div>", unsafe_allow_html=True)
 else:
-    st.markdown(f"<div class='insight-box insight-green'><b>CONFORMIDADE LRF:</b> O programa opera dentro do teto de R$ {t_lrf} Bi.</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='insight-box insight-green'><b>✅ CONFORMIDADE:</b> O cenário atual é fiscalmente sustentável dentro do teto de R$ {t_lrf} Bi.</div>", unsafe_allow_html=True)
 
 with st.expander("🔍 Memória de Cálculo Detalhada"):
     st.dataframe(df.style.format(precision=3), use_container_width=True)
