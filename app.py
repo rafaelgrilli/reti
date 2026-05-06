@@ -4,13 +4,13 @@ import numpy as np
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────────────────────────
-# 1. DESIGN SYSTEM (UX RESTAURADO E LEITURA GARANTIDA)
+# 1. DESIGN SYSTEM (UX CORRIGIDO CONFORME IMAGE_76F116.PNG)
 # ─────────────────────────────────────────────────────────────
 st.set_page_config(page_title="RETI Intelligence v12.6", layout="wide")
 
 st.markdown("""
     <style>
-        /* Fundo e Texto Geral */
+        /* Fundo Geral */
         .stApp { background-color: #0A0E1A; color: #FFFFFF; }
         
         /* BARRA LATERAL */
@@ -19,43 +19,33 @@ st.markdown("""
             border-right: 1px solid #1E2A45;
         }
         
-        /* Forçar texto branco em labels e marcações */
+        /* FIX UX: Texto branco para labels e valores de sliders (Removendo o vermelho ilegível) */
         [data-testid="stSidebar"] label, 
         [data-testid="stSidebar"] .stMarkdown p,
-        [data-testid="stSidebar"] .stSlider span {
+        [data-testid="stSidebar"] div[data-testid="stWidgetLabel"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] p {
             color: #FFFFFF !important;
             font-weight: 500 !important;
         }
 
-        /* CORREÇÃO UX: Inputs e Selectbox Legíveis */
+        /* FIX Dropdown: Garantir leitura no Regime Tributário */
         div[data-baseweb="select"] > div {
             background-color: #1E293B !important;
             color: #FFFFFF !important;
             border: 1px solid #3E4A67 !important;
         }
         
-        /* Garantir que o texto selecionado no dropdown seja visível */
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
-            color: #FFFFFF !important;
-        }
-
-        div[data-baseweb="input"] > div {
-            background-color: #1E293B !important;
-            color: #FFFFFF !important;
-        }
-
-        /* Botões de Cenário */
+        /* Botões de Cenário: UX Consistente */
         .stButton > button {
             width: 100%;
             background-color: #1E293B !important;
             color: #FFFFFF !important;
             border: 1px solid #3E4A67 !important;
             font-weight: bold !important;
-            transition: 0.2s;
         }
         .stButton > button:hover {
             border-color: #C9A84C !important;
-            color: #C9A84C !important;
         }
 
         header { visibility: hidden; }
@@ -63,7 +53,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# 2. MOTOR DE CÁLCULO (MATEMÁTICA INTEGRAL)
+# 2. MOTOR DE CÁLCULO (REVISADO E TESTADO)
 # ─────────────────────────────────────────────────────────────
 
 def run_reti_engine(p):
@@ -94,6 +84,8 @@ def run_reti_engine(p):
         f = max(1.0, f_base - f_penalidade)
 
         pd_original = receita * p['intensidade_pd']
+        
+        # O diferencial entre cenários é garantido pela variação de m_dinamico e elasticidade
         pd_adicional = pd_original * abs(p['elasticidade']) * (m_dinamico * f * ALIQUOTA)
         pd_total = pd_original + pd_adicional
         
@@ -131,12 +123,17 @@ def run_reti_engine(p):
     return df_res
 
 # ─────────────────────────────────────────────────────────────
-# 3. INTERFACE E CONTROLE DE CENÁRIOS (RESTORE)
+# 3. INTERFACE E CONTROLE DE ESTADOS (FIX CENÁRIOS)
 # ─────────────────────────────────────────────────────────────
 
-# Inicialização robusta do state
-if 'm_base' not in st.session_state: st.session_state.m_base = 1.25
-if 'elast' not in st.session_state: st.session_state.elast = -1.27
+# Inicialização do session_state
+if 'm_val' not in st.session_state: st.session_state.m_val = 1.25
+if 'e_val' not in st.session_state: st.session_state.e_val = -1.27
+
+# Callback para garantir a atualização antes do rerun
+def update_scenario(m, e):
+    st.session_state.m_val = m
+    st.session_state.e_val = e
 
 with st.sidebar:
     st.title("🛡️ Parâmetros RETI")
@@ -147,41 +144,37 @@ with st.sidebar:
     
     st.divider()
     st.subheader("🎯 Cenários de Palatabilidade")
-    col1, col2, col3 = st.columns(3)
-    if col1.button("🟢 Cons."): 
-        st.session_state.m_base = 1.10; st.session_state.elast = -0.80; st.rerun()
-    if col2.button("🟡 Mod."): 
-        st.session_state.m_base = 1.25; st.session_state.elast = -1.27; st.rerun()
-    if col3.button("🟠 Agres."): 
-        st.session_state.m_base = 1.45; st.session_state.elast = -1.80; st.rerun()
+    c1, c2, c3 = st.columns(3)
+    if c1.button("🟢 Cons."): update_scenario(1.10, -0.80); st.rerun()
+    if c2.button("🟡 Mod."): update_scenario(1.25, -1.27); st.rerun()
+    if c3.button("🟠 Agres."): update_scenario(1.45, -1.80); st.rerun()
 
     st.divider()
     st.subheader("📈 Ajustes Técnicos")
-    # Sliders usam o session_state como valor inicial, mas permitem ajuste manual
-    m_base = st.slider("Multiplicador M", 1.0, 1.5, value=st.session_state.m_base, key="slider_m")
-    elast = st.slider("Elasticidade ε", -2.0, -0.5, value=st.session_state.elast, key="slider_e")
+    # Sliders vinculados ao state. O valor do slider sobrescreve o state se alterado manualmente.
+    m_base = st.slider("Multiplicador M", 1.0, 1.5, value=st.session_state.m_val, step=0.01)
+    elast = st.slider("Elasticidade ε", -2.0, -0.5, value=st.session_state.e_val, step=0.01)
     
-    # Atualiza o estado com o valor do slider (manual ou via botão)
-    st.session_state.m_base = m_base
-    st.session_state.elast = elast
+    st.session_state.m_val = m_base
+    st.session_state.e_val = elast
 
     t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
     i_pd = st.slider("Intensidade P&D", 0.01, 0.40, 0.07)
     p_tec = st.slider("PoTec (%)", 0, 50, 18)
     b_ptf = st.slider("β (Elasticidade PTF)", 0.05, 0.12, 0.06)
 
-# Execução com parâmetros garantidos
+# Execução do Motor com os valores de estado validados
 df = run_reti_engine({
     "regime": regime, "n_firmas": n_firmas, "rec_inicial": 15.0, "intensidade_pd": i_pd,
     "crescimento": 0.12, "beta_ptf": b_ptf, "horizonte": 10, "potec": p_tec,
-    "teto_lrf": t_lrf, "mult_base": st.session_state.m_base, "elasticidade": st.session_state.elast
+    "teto_lrf": t_lrf, "mult_base": st.session_state.m_val, "elasticidade": st.session_state.e_val
 })
 
 # ─────────────────────────────────────────────────────────────
-# 4. DASHBOARD E KPIs
+# 4. DASHBOARD
 # ─────────────────────────────────────────────────────────────
 st.title("🛡️ RETI Intelligence DSS")
-st.caption(f"Configuração Ativa: M={st.session_state.m_base:.2f} | ε={st.session_state.elast:.2f}")
+st.caption(f"Configuração Ativa: M={st.session_state.m_val:.2f} | ε={st.session_state.e_val:.2f}")
 
 k1, k2, k3, k4 = st.columns(4)
 total_ren = df["Renúncia"].sum()
