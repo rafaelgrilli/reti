@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 # CONFIG
 st.set_page_config(page_title="RETI DSS — SPE Ready", layout="wide")
 
-# PARÂMETROS
+# PARÂMETROS (mantidos)
 ALIQUOTA = 0.34
 PRESUNCAO = 0.32
 BETA_PTF = 0.06
@@ -15,7 +15,7 @@ LAG_PTF = 3
 DEPREC = 0.15
 SUCESSO = 0.70
 
-# FUNÇÕES
+# FUNÇÕES (INALTERADAS)
 def fator_porte(receita):
     if receita <= 3.24:
         return 3.5
@@ -41,7 +41,7 @@ def base_reti(receita, pd_total, F, m):
 def difusao(n, t):
     return n / (1 + np.exp(-1.2 * (t - 3)))
 
-# MOTOR
+# MOTOR (INALTERADO)
 def simular_reti(params):
 
     receita = params['rec_inicial']
@@ -64,7 +64,7 @@ def simular_reti(params):
 
         incentivo = params['multiplicador'] * F * ALIQUOTA
 
-        # 🔵 NOVO — transparência econômica
+        # 🔵 transparência econômica
         subsidio_efetivo = custo_relativo(incentivo)
         fator_alavancagem = abs(params['elasticidade']) * subsidio_efetivo
 
@@ -113,8 +113,6 @@ def simular_reti(params):
             "Saldo": ret_macro - ren_macro,
             "Fator F": F,
             "Pode Usar": pode,
-
-            # 🔵 NOVO — auditabilidade explícita
             "Incentivo": incentivo,
             "Subsídio Efetivo": subsidio_efetivo,
             "Fator Alavancagem": fator_alavancagem
@@ -124,7 +122,7 @@ def simular_reti(params):
     df["Acumulado"] = df["Saldo"].cumsum()
     return df
 
-# GOVERNANÇA
+# GOVERNANÇA (INALTERADA)
 def avaliar(df, teto):
     return df["Renúncia"].max() > teto
 
@@ -155,6 +153,8 @@ def rodar_cenarios(params):
 # SIDEBAR
 st.sidebar.title("Parâmetros RETI")
 
+modo = st.sidebar.selectbox("Tipo de Regime", ["RETI Amplo", "RETI Deep Tech"])
+
 params = {
     "rec_inicial": 15.0,
     "horizonte": 10,
@@ -163,9 +163,19 @@ params = {
     "intensidade_pd": st.sidebar.slider("Intensidade P&D", 0.01, 0.40, 0.07),
     "elasticidade": st.sidebar.slider("Elasticidade", -2.0, -0.5, -1.2),
     "multiplicador": st.sidebar.slider("Multiplicador", 1.0, 1.5, 1.25),
-    "teto_lrf": st.sidebar.slider("Teto LRF", 0.5, 5.0, 2.2),
+    "teto_lrf": st.sidebar.slider("Envelope Fiscal do RETI", 0.5, 5.0, 2.2),
     "potec": st.sidebar.slider("PoTec", 0.0, 0.5, 0.18)
 }
+
+# 🔵 MODO DEEP TECH (APENAS PARAMÉTRICO)
+if modo == "RETI Deep Tech":
+    params["n_firmas"] = 900
+    params["intensidade_pd"] = max(params["intensidade_pd"], 0.15)
+    params["elasticidade"] = max(params["elasticidade"], -1.5)
+
+    BETA_PTF = 0.07
+    DEPREC = 0.11
+    SUCESSO = 0.75
 
 # EXECUÇÃO
 hist = rodar_politica(params)
@@ -177,50 +187,48 @@ st.title("RETI DSS — Avaliação Fiscal e Econômica")
 
 custo_total = df["Renúncia"].sum()
 pd_total_macro = df["P&D Macro"].sum()
+pd_extra_macro = df["PD Extra Macro"].sum()
+
 alavancagem = pd_total_macro / custo_total if custo_total > 0 else 0
+
+# 🔵 NOVOS KPIs
+eficiencia = df["Retorno"].sum() / custo_total if custo_total > 0 else 0
+custo_pd_extra = custo_total / pd_extra_macro if pd_extra_macro > 0 else 0
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Custo Total (10a)", f"R$ {custo_total:.2f} Bi")
 k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
-k3.metric("Intensidade P&D", f"{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}")
-k4.metric("Aderência ao Envelope Fiscal do RETI",
-          "NÃO ADERENTE" if df["Renúncia"].max() > params["teto_lrf"] else "ADERENTE")
+k3.metric("Eficiência Fiscal (Retorno/Custo)", f"{eficiencia:.2f}")
+k4.metric("Custo por P&D Adicional", f"R$ {custo_pd_extra:.2f}")
 
-st.caption("""
-O indicador refere-se ao limite fiscal do programa RETI, não ao teto fiscal agregado da União.
-""")
+# 🔵 KPI envelope
+st.metric(
+    "Aderência ao Envelope Fiscal do RETI",
+    f"{df['Renúncia'].max():.2f} / {params['teto_lrf']:.2f}",
+    delta="OK" if df["Renúncia"].max() <= params["teto_lrf"] else "Acima"
+)
 
-# 🔵 NOVO — explicação objetiva aprimorada
-st.caption("""
-Mecanismo de alavancagem:
-P&D adicional = elasticidade (ε) × redução de custo do P&D (subsídio fiscal).
-""")
+# explicação
+st.caption("Mecanismo: P&D adicional = ε × redução de custo (subsídio fiscal)")
 
-# GRÁFICOS
-st.subheader("Dinâmica Fiscal do Programa (R$ bilhões)")
-st.caption("""
-Comparação entre:
-- Renúncia fiscal anual (custo do programa)
-- Retorno fiscal estimado via produtividade e atividade econômica
-""")
+# GRÁFICOS (COM TÍTULO)
+st.subheader("Custo Fiscal vs Retorno Econômico")
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo"))
-fig.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno"))
+fig.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo Fiscal"))
+fig.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno Econômico"))
+fig.update_layout(title="Fluxo anual de custo vs retorno do RETI")
 st.plotly_chart(fig, use_container_width=True)
 
-st.subheader("Resultado Fiscal Líquido Acumulado (R$ bilhões)")
-st.caption("""
-Saldo acumulado = retorno fiscal estimado – renúncia do programa.
-
-Indicador não representa payback direto, mas uma aproximação do impacto fiscal líquido ao longo do tempo.
-""")
+st.subheader("Resultado Fiscal Acumulado do Programa")
 
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
+fig2.update_layout(title="Saldo acumulado (retorno - custo)")
 st.plotly_chart(fig2, use_container_width=True)
 
-# MACRO (INALTERADO)
+# RESTANTE DO CÓDIGO INALTERADO ↓↓↓
+
 st.subheader("Impacto Macroeconômico")
 
 PIB = 10000
@@ -241,7 +249,6 @@ m1.metric("P&D / PIB (Atual)", "1.17%")
 m2.metric("P&D / PIB (com RETI)", f"{df['P&D/PIB_total'].iloc[-1]:.2%}")
 m3.metric("Δ P&D / PIB", f"{df['P&D/PIB_incremental'].iloc[-1]:.2%}")
 
-# SENSIBILIDADE (INALTERADO)
 st.subheader("Intervalo de Resultados")
 
 custos = [c["Renúncia"].sum() for c in cenarios.values()]
@@ -250,7 +257,6 @@ c1, c2 = st.columns(2)
 c1.metric("Custo Médio", f"R$ {np.mean(custos):.2f} Bi",
           delta=f"{min(custos):.2f} – {max(custos):.2f}")
 
-# DIAGNÓSTICO (INALTERADO)
 st.subheader("Diagnóstico")
 
 if alavancagem > 1.5:
@@ -261,24 +267,12 @@ else:
     st.warning("Baixa adicionalidade")
 
 if df["Renúncia"].max() > params["teto_lrf"]:
-    st.error("Pressão fiscal: excede envelope do programa")
+    st.error("Pressão sobre o envelope fiscal do programa")
 else:
-    st.success("Programa dentro do envelope fiscal")
+    st.success("Dentro do envelope fiscal do programa")
 
-# LIMITAÇÕES (INALTERADO)
 st.subheader("Nota Metodológica")
 st.caption("Modelo estrutural baseado em parâmetros da literatura. Resultados devem ser interpretados como cenários, não previsões pontuais.")
 
-# TABELA
 with st.expander("Dados detalhados + variáveis do modelo"):
-    st.markdown("""
-**Novas variáveis adicionadas para auditabilidade:**
-
-- **Incentivo**: intensidade do benefício fiscal aplicado  
-- **Subsídio Efetivo**: redução percentual do custo do P&D  
-- **Fator Alavancagem**: ε × subsídio → impacto sobre investimento  
-
-**Leitura:**
-O RETI atua reduzindo o custo do P&D → empresas respondem via elasticidade → investimento adicional emerge.
-""")
     st.dataframe(df)
