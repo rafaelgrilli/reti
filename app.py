@@ -28,9 +28,6 @@ st.markdown("""
             color: #FFFFFF !important;
             border: 1px solid #3E4A67 !important;
         }
-        div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
-            color: #FFFFFF !important;
-        }
         [data-testid="stMetric"] {
             background-color: #161C2D !important;
             border: 1px solid #1E2A45 !important;
@@ -45,13 +42,13 @@ st.markdown("""
             color: #FFFFFF !important;
             border: 1px solid #3E4A67 !important;
         }
-        .stButton > button:hover { border-color: #C9A84C !important; color: #C9A84C !important; }
+        .stButton > button:hover { border-color: #C9A84C !important; }
         header { visibility: hidden; }
     </style>
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# 2. MOTOR DE CÁLCULO (CORREÇÃO DA EQUALIZAÇÃO DE CENÁRIOS)
+# 2. MOTOR DE CÁLCULO (IMPLEMENTAÇÃO DE PENALIDADE SUAVE)
 # ─────────────────────────────────────────────────────────────
 
 def run_reti_engine(p):
@@ -63,32 +60,26 @@ def run_reti_engine(p):
     historico_maturacao = np.zeros(p['horizonte'] + LAG + 10)
     receita = p['rec_inicial']
     
-    violation_last_year = False
-    m_base_cenario = p['mult_base'] 
+    # Variáveis de controle de penalidade (agora contínuas)
+    f_penalidade = 0
     
     for t in range(1, p['horizonte'] + 1):
         rec_ant = receita
         receita *= (1 + p['crescimento'])
         
-        # Ajuste paramétrico: a penalidade agora é proporcional, 
-        # garantindo que o ponto de partida (cenário) ainda influencie o resultado.
-        if violation_last_year:
-            m_efetivo = max(1.0, m_base_cenario * 0.85) # Redução de 15% sobre a base do cenário
-            f_penalidade = 0.5
-        else:
-            m_efetivo = m_base_cenario
-            f_penalidade = 0
+        # Lógica de Penalidade Suave (Opção 1 do Feedback)
+        # O m_efetivo agora é uma função do excesso em relação ao teto, evitando o "clamp" binário
+        m_efetivo = p['mult_base'] * (1 - 0.25 * f_penalidade) 
         
         if receita <= 3.24: f_base = 3.5
         elif receita <= 78.0: f_base = 2.5
         elif receita <= 200.0: f_base = max(1.0, 2.5 - 0.012 * (receita - 78.0))
         else: f_base = 1.0
         
-        f = max(1.0, f_base - f_penalidade)
+        f_ajustado = max(1.0, f_base - f_penalidade)
 
         pd_original = receita * p['intensidade_pd']
-        # pd_adicional agora variará obrigatoriamente entre moderado e agressivo
-        pd_adicional = pd_original * abs(p['elasticidade']) * (m_efetivo * f * ALIQUOTA)
+        pd_adicional = pd_original * abs(p['elasticidade']) * (m_efetivo * f_ajustado * ALIQUOTA)
         pd_total = pd_original + pd_adicional
         
         if t + LAG < len(historico_maturacao): 
@@ -101,22 +92,26 @@ def run_reti_engine(p):
 
         if p['regime'] == "Lucro Presumido":
             base_orig = receita * PRESUNCAO
-            base_red = max(base_orig * 0.25, base_orig - (m_efetivo * pd_total * f))
+            base_red = max(base_orig * 0.25, base_orig - (m_efetivo * pd_total * f_ajustado))
             ren_unitaria = (base_orig - base_red) * ALIQUOTA if pode_usar else 0
         else:
             if p['intensidade_pd'] >= 0.15 and pode_usar:
                 prog = min(p['intensidade_pd'], 0.30) / 0.30
-                ren_unitaria = pd_total * 0.40 * prog * f
+                ren_unitaria = pd_total * 0.40 * prog * f_ajustado
             else: ren_unitaria = 0
 
         firmas = p['n_firmas'] / (1 + np.exp(-1.2 * (t - 3)))
         ren_macro = (ren_unitaria * firmas) / 1000
         ret_macro = (retorno_total * firmas) / 1000
-        violation_last_year = ren_macro > p['teto_lrf']
+        
+        # Diagnóstico de Excesso LRF para o próximo ciclo
+        excesso = max(0, ren_macro - p['teto_lrf'])
+        f_penalidade = min(0.5, excesso / p['teto_lrf']) if p['teto_lrf'] > 0 else 0
 
         rows.append({
             "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M_Efetivo": m_efetivo
+            "Saldo": ret_macro - ren_macro, "M_Efetivo": m_efetivo,
+            "Penalidade_LRF": f_penalidade
         })
 
     df_res = pd.DataFrame(rows)
@@ -195,10 +190,13 @@ with col_a:
     st.plotly_chart(fig1, use_container_width=True)
 
 with col_b:
+    st.subheader("💰 Saldo Acumulado (ROI)")
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], name="Saldo", fill='tozeroy', line=dict(color='#10B981', width=4)))
     fig2.update_layout(template="plotly_dark", height=400, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
     st.plotly_chart(fig2, use_container_width=True)
 
-with st.expander("🔍 Memória de Cálculo Detalhada"):
-    st.dataframe(df.style.format(precision=3), use_container_width=True)
+with st.expander("🔍 Memória de Cálculo e Diagnóstico Fiscal"):
+    # Diagnóstico explícito conforme Opção 3 do feedback
+    st.write("Abaixo, o comportamento dos multiplicadores e as penalidades aplicadas:")
+    st.dataframe(df[["Ano", "Renúncia", "Retorno", "M_Efetivo", "Penalidade_LRF"]].style.format(precision=3), use_container_width=True)
