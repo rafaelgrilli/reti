@@ -3,14 +3,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-# ─────────────────────────────────────────────
 # CONFIG
-# ─────────────────────────────────────────────
 st.set_page_config(page_title="RETI DSS — SPE Ready", layout="wide")
 
-# ─────────────────────────────────────────────
-# PARÂMETROS ESTRUTURAIS
-# ─────────────────────────────────────────────
+# PARÂMETROS
 ALIQUOTA = 0.34
 PRESUNCAO = 0.32
 BETA_PTF = 0.06
@@ -19,18 +15,12 @@ LAG_PTF = 3
 DEPREC = 0.15
 SUCESSO = 0.70
 
-# ─────────────────────────────────────────────
-# FUNÇÕES ECONÔMICAS
-# ─────────────────────────────────────────────
+# FUNÇÕES
 def fator_porte(receita):
-    if receita <= 3.24:
-        return 3.5
-    elif receita <= 78:
-        return 2.5
-    elif receita <= 200:
-        return 2.5 - 0.012 * (receita - 78)
-    else:
-        return 1.0
+    if receita <= 3.24: return 3.5
+    elif receita <= 78: return 2.5
+    elif receita <= 200: return 2.5 - 0.012 * (receita - 78)
+    else: return 1.0
 
 def custo_relativo(incentivo):
     return incentivo / (1 + incentivo)
@@ -47,14 +37,11 @@ def base_reti(receita, pd_total, F, m):
 def difusao(n, t):
     return n / (1 + np.exp(-1.2 * (t - 3)))
 
-# ─────────────────────────────────────────────
-# MOTOR PRINCIPAL
-# ─────────────────────────────────────────────
+# MOTOR
 def simular_reti(params):
 
     receita = params['rec_inicial']
     intensidade_anterior = 0
-
     historico_pd = np.zeros(params['horizonte'] + 10)
     estoque = 0
 
@@ -66,13 +53,8 @@ def simular_reti(params):
         receita *= (1 + params['crescimento'])
         crescimento = (receita / rec_ant) - 1
 
-        # Gatilho de performance
-        if t > 3:
-            pode = (crescimento >= 0.10 or params['potec'] >= 0.15)
-        else:
-            pode = True
+        pode = True if t <= 3 else (crescimento >= 0.10 or params['potec'] >= 0.15)
 
-        # P&D
         pd_base = receita * params['intensidade_pd']
         F = fator_porte(receita)
 
@@ -80,7 +62,6 @@ def simular_reti(params):
         pd_extra = adicionalidade_pd(pd_base, params['elasticidade'], incentivo)
         pd_total = pd_base + pd_extra
 
-        # Base fiscal
         if pode:
             base, base_red = base_reti(receita, pd_total, F, params['multiplicador'])
             ren_unit = (base - base_red) * ALIQUOTA
@@ -88,22 +69,22 @@ def simular_reti(params):
             ren_unit = 0
 
         firmas = difusao(params['n_firmas'], t)
-        ren_macro = (ren_unit * firmas) / 1000
 
-        # Acúmulo tecnológico
+        # macro consistente
+        ren_macro = (ren_unit * firmas) / 1000
+        pd_macro = (pd_total * firmas) / 1000
+
         if t + LAG_PTF < len(historico_pd):
             historico_pd[t + LAG_PTF] = pd_extra * SUCESSO
 
         estoque = estoque * (1 - DEPREC) + historico_pd[t]
 
-        # PTF (delta)
         intensidade = pd_total / receita
         delta_int = intensidade - intensidade_anterior
         intensidade_anterior = intensidade
 
         delta_ptf = BETA_PTF * delta_int
 
-        # ROI fiscal (mantido, mas não mais central)
         ret_base = receita * delta_ptf * ALIQUOTA
         ret_ind = ret_base * (MULT_INDIRETO - 1)
         ret_est = estoque * 0.01
@@ -115,6 +96,7 @@ def simular_reti(params):
             "Ano": t,
             "Receita": receita,
             "P&D Total": pd_total,
+            "P&D Macro": pd_macro,
             "Renúncia": ren_macro,
             "Retorno": ret_macro,
             "Saldo": ret_macro - ren_macro,
@@ -124,12 +106,9 @@ def simular_reti(params):
 
     df = pd.DataFrame(rows)
     df["Acumulado"] = df["Saldo"].cumsum()
-
     return df
 
-# ─────────────────────────────────────────────
-# GOVERNANÇA FISCAL
-# ─────────────────────────────────────────────
+# GOVERNANÇA
 def avaliar(df, teto):
     return df["Renúncia"].max() > teto
 
@@ -149,63 +128,50 @@ def rodar_politica(params, rodadas=3):
             params = ajustar(params)
     return hist
 
-# ─────────────────────────────────────────────
-# SIDEBAR
-# ─────────────────────────────────────────────
+# SIDEBAR (COM HELP)
 st.sidebar.title("Parâmetros RETI")
 
 params = {
     "rec_inicial": 15.0,
     "horizonte": 10,
-    "n_firmas": st.sidebar.number_input("Firmas", 1000, 10000, 4500),
-    "crescimento": st.sidebar.slider("Crescimento Receita", 0.05, 0.20, 0.12),
-    "intensidade_pd": st.sidebar.slider("Intensidade P&D", 0.01, 0.40, 0.07),
-    "elasticidade": st.sidebar.slider("Elasticidade", -2.0, -0.5, -1.2),
-    "multiplicador": st.sidebar.slider("Multiplicador", 1.0, 1.5, 1.25),
-    "teto_lrf": st.sidebar.slider("Teto LRF", 0.5, 5.0, 2.2),
-    "potec": st.sidebar.slider("PoTec", 0.0, 0.5, 0.18)
+    "n_firmas": st.sidebar.number_input("Firmas", 1000, 10000, 4500,
+        help="Número de empresas elegíveis ao regime"),
+    "crescimento": st.sidebar.slider("Crescimento Receita", 0.05, 0.20, 0.12,
+        help="Crescimento médio anual das firmas"),
+    "intensidade_pd": st.sidebar.slider("Intensidade P&D", 0.01, 0.40, 0.07,
+        help="Percentual da receita investido em P&D"),
+    "elasticidade": st.sidebar.slider("Elasticidade", -2.0, -0.5, -1.2,
+        help="Resposta do investimento em P&D ao incentivo"),
+    "multiplicador": st.sidebar.slider("Multiplicador", 1.0, 1.5, 1.25,
+        help="Intensidade do incentivo fiscal"),
+    "teto_lrf": st.sidebar.slider("Teto LRF", 0.5, 5.0, 2.2,
+        help="Limite máximo anual de custo fiscal"),
+    "potec": st.sidebar.slider("PoTec", 0.0, 0.5, 0.18,
+        help="Percentual de pessoal técnico qualificado")
 }
 
-# ─────────────────────────────────────────────
 # EXECUÇÃO
-# ─────────────────────────────────────────────
 hist = rodar_politica(params)
 df = hist[-1][2]
 violou = hist[-1][3]
 
-# ─────────────────────────────────────────────
 # HEADER
-# ─────────────────────────────────────────────
 st.title("RETI DSS — Avaliação Fiscal e Econômica")
 
-st.markdown("""
-Simulação do impacto do RETI sobre investimento em P&D, produtividade (PTF) 
-e sustentabilidade fiscal.
-""")
-
-# ─────────────────────────────────────────────
-# KPIs (NOVO PADRÃO FAZENDA)
-# ─────────────────────────────────────────────
+# KPIs
 k1, k2, k3, k4 = st.columns(4)
 
 custo_total = df["Renúncia"].sum()
-retorno_total = df["Retorno"].sum()
-pd_total = df["P&D Total"].sum()
+pd_total_macro = df["P&D Macro"].sum()
+
+alavancagem = pd_total_macro / custo_total if custo_total > 0 else 0
 
 k1.metric("Custo Total (10a)", f"R$ {custo_total:.2f} Bi")
-
-alavancagem = pd_total / custo_total if custo_total > 0 else 0
 k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
+k3.metric("Intensidade P&D", f"{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}")
+k4.metric("Risco Fiscal", "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO")
 
-intensidade_final = df["P&D Total"].iloc[-1] / df["Receita"].iloc[-1]
-k3.metric("Intensidade P&D", f"{intensidade_final:.2%}")
-
-risco = "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO"
-k4.metric("Risco Fiscal", risco)
-
-# ─────────────────────────────────────────────
-# GRÁFICOS (mantidos)
-# ─────────────────────────────────────────────
+# GRÁFICOS (inalterados)
 st.subheader("📊 Dinâmica Fiscal")
 
 fig = go.Figure()
@@ -219,9 +185,23 @@ fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
 st.plotly_chart(fig2, use_container_width=True)
 
-# ─────────────────────────────────────────────
-# DIAGNÓSTICO (NOVO)
-# ─────────────────────────────────────────────
+# NOVO BLOCO — MACRO
+st.subheader("🌍 Impacto Macroeconômico")
+
+PIB = 10000
+g = 0.022
+pib_series = []
+
+for _ in df["Ano"]:
+    PIB *= (1 + g)
+    pib_series.append(PIB)
+
+df["PIB"] = pib_series
+df["P&D/PIB"] = df["P&D Macro"] / df["PIB"]
+
+st.metric("P&D / PIB (final)", f"{df['P&D/PIB'].iloc[-1]:.2%}")
+
+# DIAGNÓSTICO (mantido)
 st.subheader("🧮 Diagnóstico do Regime")
 
 if alavancagem > 1.5:
@@ -236,29 +216,6 @@ if df["Renúncia"].max() > params["teto_lrf"]:
 else:
     st.success("Sustentabilidade fiscal preservada")
 
-crescimento_pd = (df["P&D Total"].iloc[-1] / df["P&D Total"].iloc[0]) - 1
-st.info(f"Expansão do investimento em P&D: {crescimento_pd:.2%}")
-
-# ─────────────────────────────────────────────
-# INTERPRETAÇÃO (REPOSICIONADA)
-# ─────────────────────────────────────────────
-st.subheader("🧠 Interpretação Econômica")
-
-st.markdown(f"""
-O RETI deve ser avaliado como instrumento de indução tecnológica, não como mecanismo de retorno fiscal imediato.
-
-- Custo total: **R$ {custo_total:.2f} Bi**  
-- Alavancagem de investimento: **{alavancagem:.2f}x**  
-- Intensidade tecnológica final: **{intensidade_final:.2%}**
-
-**Leitura institucional:**
-- O critério central é a capacidade de induzir investimento privado  
-- A sustentabilidade fiscal é garantida pelo controle do custo anual  
-- O retorno ocorre predominantemente no longo prazo via produtividade  
-""")
-
-# ─────────────────────────────────────────────
-# TABELA
-# ─────────────────────────────────────────────
+# TABELA (inalterada)
 with st.expander("🔍 Dados detalhados"):
     st.dataframe(df)
