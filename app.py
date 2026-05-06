@@ -2,39 +2,57 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ─────────────────────────────────────────────────────────────
-# 1. DESIGN SYSTEM & UI CONFIG
+# 1. DESIGN SYSTEM (FOCO EM LEGIBILIDADE E CONTRASTE)
 # ─────────────────────────────────────────────────────────────
-st.set_page_config(page_title="RETI Intelligence DSS v10.90", layout="wide")
+st.set_page_config(page_title="RETI Intelligence v11.0", layout="wide")
 
-CORES = {
-    "gold": "#C9A84C", "cyan": "#2BBFCE", "red": "#EF4444",
-    "green": "#10B981", "amber": "#F59E0B", "bg": "#0A0E1A",
-    "card": "#161C2D", "border": "#1E2A45", "text": "#FFFFFF"
-}
+# CSS para garantir que NADA fique ilegível (Sidebar e Cards)
+st.markdown("""
+    <style>
+        /* Fundo e Texto Principal */
+        .stApp { background-color: #0A0E1A; color: #FFFFFF; }
+        
+        /* SIDEBAR: Fundo escuro sólido com texto branco puro */
+        [data-testid="stSidebar"] {
+            background-color: #111827 !important;
+            border-right: 1px solid #1F2937;
+        }
+        [data-testid="stSidebar"] .stMarkdown p, [data-testid="stSidebar"] label {
+            color: #FFFFFF !important;
+            font-weight: 600 !important;
+            font-size: 14px !important;
+        }
+        
+        /* Correção da Barra Superior do Streamlit */
+        header { visibility: hidden; }
+        .block-container { padding-top: 1rem !important; }
 
-st.markdown(f"""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&display=swap');
-    html, body, [class*="css"] {{ font-family: 'Sora', sans-serif; background-color: {CORES['bg']}; color: {CORES['text']}; }}
-    .stApp {{ background-color: {CORES['bg']}; }}
-    .block-container {{ padding-top: 2rem !important; }}
-    header {{ visibility: hidden; }} 
-    [data-testid="stSidebar"] {{ background-color: #0F1525 !important; border-right: 1px solid {CORES['border']}; min-width: 350px !important; }}
-    [data-testid="stSidebar"] label {{ color: #CBD5E1 !important; font-weight: 600 !important; }}
-    [data-testid="stMetric"] {{
-        background-color: {CORES['card']} !important; border: 1px solid {CORES['border']} !important;
-        border-left: 4px solid {CORES['gold']} !important; border-radius: 8px !important; padding: 15px !important;
-    }}
-    .insight-box {{ padding: 18px; margin: 12px 0px; border-radius: 8px; border-left: 6px solid; background-color: #1E293B; color: #FFFFFF !important; }}
-    .insight-red {{ border-color: {CORES['red']}; }} .insight-green {{ border-color: {CORES['green']}; }}
-</style>
-""", unsafe_allow_html=True)
+        /* CARDS DE MÉTRICA: Contraste Azul/Ouro */
+        [data-testid="stMetric"] {
+            background-color: #1E293B !important;
+            border: 1px solid #334155 !important;
+            border-left: 5px solid #C9A84C !important;
+            padding: 15px !important;
+            border-radius: 8px !important;
+        }
+        [data-testid="stMetricLabel"] { color: #94A3B8 !important; font-size: 13px !important; }
+        [data-testid="stMetricValue"] { color: #FFFFFF !important; font-size: 24px !important; font-weight: 700 !important; }
+
+        /* CAIXAS DE INSIGHT */
+        .insight-box {
+            padding: 15px; margin: 10px 0px; border-radius: 8px; border-left: 6px solid;
+            background-color: #161E2E; color: #FFFFFF !important; font-size: 14px;
+        }
+        .insight-red { border-color: #EF4444; }
+        .insight-green { border-color: #10B981; }
+        .insight-blue { border-color: #3B82F6; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────
-# 2. MOTOR DE CÁLCULO (PROTOCOLO INTEGRAL SPE/MF)
+# 2. MOTOR DE CÁLCULO (100% FIEL À PROPOSTA SPE/MF)
 # ─────────────────────────────────────────────────────────────
 
 def run_reti_engine(p):
@@ -54,7 +72,7 @@ def run_reti_engine(p):
         rec_ant = receita
         receita *= (1 + p['crescimento'])
         
-        # Item 7: Ajuste Paramétrico Automático (Hierarquia de Preferência)
+        # Item 7: Hierarquia de Ajuste Paramétrico Automático
         if violation_last_year:
             if m_dinamico > 1.0: m_dinamico = max(1.0, m_dinamico - 0.15)
             else: f_penalidade = 0.5
@@ -88,12 +106,14 @@ def run_reti_engine(p):
         # Cálculo da Renúncia (Item 3 e 6)
         if p['regime'] == "Lucro Presumido":
             base_orig = receita * PRESUNCAO
+            # FÓRMULA ITEM 3: Base = (Rec * 0.32) - (M * PD * F)
             base_red = max(base_orig * 0.25, base_orig - (m_dinamico * pd_total * f))
             renuncia_unitaria = (base_orig - base_red) * ALIQUOTA if pode_usar else 0
         else:
-            # RETI-SME: Vouchers Progressivos
+            # RETI-SME (Item 6): Threshold 15%
             if p['intensidade_pd'] >= 0.15 and pode_usar:
-                renuncia_unitaria = pd_total * 0.40 * (min(p['intensidade_pd'], 0.30)/0.30) * f
+                prog = min(p['intensidade_pd'], 0.30) / 0.30
+                renuncia_unitaria = pd_total * 0.40 * prog * f
             else: renuncia_unitaria = 0
 
         # Curva de Adesão Sigmóide
@@ -103,7 +123,7 @@ def run_reti_engine(p):
 
         rows.append({
             "Ano": t, "Renúncia": ren_macro, "Retorno": ret_macro, 
-            "Saldo": ret_macro - ren_macro, "M": m_dinamico, "F": f, "Adesão": int(firmas)
+            "Saldo": ret_macro - ren_macro, "M": m_dinamico, "F": f
         })
 
     df = pd.DataFrame(rows)
@@ -111,132 +131,89 @@ def run_reti_engine(p):
     return df
 
 # ─────────────────────────────────────────────────────────────
-# 3. INTERFACE SIDEBAR COMPLETA
+# 3. INTERFACE E DASHBOARD
 # ─────────────────────────────────────────────────────────────
 
-# Inicialização de Session State para Cenários
+# Inicialização de Session State para os Botões de Palatabilidade
 if 'm_val' not in st.session_state: st.session_state.m_val = 1.25
 if 'e_val' not in st.session_state: st.session_state.e_val = -1.27
 
 with st.sidebar:
-    st.title("⚙️ Parâmetros")
+    st.title("🛡️ Parâmetros RETI")
+    
+    st.subheader("🎯 Palatabilidade Fiscal")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("🟢 Cons."): 
+        st.session_state.m_val = 1.10; st.session_state.e_val = -0.90; st.rerun()
+    if c2.button("🟡 Mod."): 
+        st.session_state.m_val = 1.25; st.session_state.e_val = -1.27; st.rerun()
+    if c3.button("🟠 Agres."): 
+        st.session_state.m_val = 1.40; st.session_state.e_val = -1.60; st.rerun()
+
+    st.divider()
     regime = st.selectbox("Regime Tributário", ["Lucro Presumido", "Simples Nacional (RETI-SME)"])
     n_firmas = st.number_input("Universo de Firmas", value=4500)
     t_lrf = st.slider("Teto LRF (R$ Bi/ano)", 0.5, 5.0, 2.2)
     
     st.subheader("🏢 Perfil da Firma")
-    r_ini = st.number_input("Receita Inicial (R$ MM)", value=15.0)
     i_pd = st.slider("Intensidade P&D", 0.01, 0.40, 0.07)
-    cresc = st.slider("Crescimento Anual", 0.0, 0.30, 0.12)
     p_tec = st.slider("PoTec (%)", 0, 50, 18)
     
     st.subheader("📈 Macro SPE")
     b_ptf = st.slider("β (Elasticidade PTF)", 0.05, 0.12, 0.06)
-    m_base = st.slider("Multiplicador M Inicial", 1.0, 1.5, st.session_state.m_val)
+    m_base = st.slider("Multiplicador M", 1.0, 1.5, st.session_state.m_val)
     elast = st.slider("Elasticidade ε", -2.0, -0.5, st.session_state.e_val)
 
-# Execução Base
-params_base = {
-    "regime": regime, "n_firmas": n_firmas, "rec_inicial": r_ini, "intensidade_pd": i_pd,
-    "crescimento": cresc, "beta_ptf": b_ptf, "horizonte": 10, "potec": p_tec,
+# Execução
+df = run_reti_engine({
+    "regime": regime, "n_firmas": n_firmas, "rec_inicial": 15.0, "intensidade_pd": i_pd,
+    "crescimento": 0.12, "beta_ptf": b_ptf, "horizonte": 10, "potec": p_tec,
     "patente": 3, "teto_lrf": t_lrf, "mult_base": m_base, "elasticidade": elast
-}
-df = run_reti_engine(params_base)
+})
 
-# ─────────────────────────────────────────────────────────────
-# 4. DASHBOARD PRINCIPAL
-# ─────────────────────────────────────────────────────────────
-
+# KPIs
 st.title("🛡️ RETI Intelligence DSS")
-st.caption("Decision Support System | Protocolo SPE/MF & RFB v10.90")
+st.caption("Decision Support System | Protocolo SPE/MF & RFB v11.0")
 
-# KPIs Superiores
-c1, c2, c3, c4 = st.columns(4)
+k1, k2, k3, k4 = st.columns(4)
 total_ren = df["Renúncia"].sum()
 total_ret = df["Retorno"].sum()
 payback_df = df[df["Acumulado"] > 0]
 payback_ano = payback_df["Ano"].min() if not payback_df.empty else "N/A"
 
-c1.metric("Custo Total (10a)", f"R$ {total_ren:.2f} Bi")
-c2.metric("Retorno PIB (PTF)", f"R$ {total_ret:.2f} Bi")
-c3.metric("Payback Fiscal", f"Ano {payback_ano}")
-c4.metric("Status LRF", "CONFORME" if df["Renúncia"].max() <= t_lrf else "AJUSTADO")
+k1.metric("Custo Total (10a)", f"R$ {total_ren:.2f} Bi")
+k2.metric("Retorno PIB (PTF)", f"R$ {total_ret:.2f} Bi")
+k3.metric("Payback Fiscal", f"Ano {payback_ano}")
+k4.metric("Status LRF", "CONFORME" if df["Renúncia"].max() <= t_lrf else "AJUSTADO")
 
-tabs = st.tabs(["📊 Fluxo Fiscal", "🎯 Sensibilidade", "⚖️ Compensação", "📋 Dados"])
+# GRÁFICOS
+col_a, col_b = st.columns(2)
+with col_a:
+    st.subheader("📅 Fluxo Anual (LRF)")
+    fig1 = go.Figure()
+    fig1.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo", line=dict(color='#EF4444', width=4)))
+    fig1.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno", line=dict(color='#2BBFCE', width=4)))
+    fig1.add_hline(y=t_lrf, line_dash="dash", line_color="#C9A84C", annotation_text="Teto LRF")
+    fig1.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(fig1, use_container_width=True)
 
-with tabs[0]:
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader("Fluxo Anual (R$ Bi)")
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo", line=dict(color=CORES['red'], width=4)))
-        fig1.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno", line=dict(color=CORES['cyan'], width=4)))
-        fig1.add_hline(y=t_lrf, line_dash="dash", line_color=CORES['gold'], annotation_text="Teto LRF")
-        fig1.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig1, use_container_width=True)
-    with col_b:
-        st.subheader("Saldo Acumulado (R$ Bi)")
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], name="Saldo", fill='tozeroy', line=dict(color=CORES['green'], width=4), fillcolor='rgba(16, 185, 129, 0.2)'))
-        fig2.add_hline(y=0, line_color="#FFFFFF")
-        fig2.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, use_container_width=True)
+with col_b:
+    st.subheader("💰 Saldo Acumulado (ROI)")
+    fig2 = go.Figure()
+    fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], name="Saldo", fill='tozeroy', line=dict(color='#10B981', width=4), fillcolor='rgba(16, 185, 129, 0.2)'))
+    fig2.add_hline(y=0, line_color="#FFFFFF")
+    fig2.update_layout(template="plotly_dark", height=350, margin=dict(l=10,r=10,t=30,b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    st.plotly_chart(fig2, use_container_width=True)
 
-with tabs[1]:
-    st.subheader("Matriz de Sensibilidade: ROI (%) por ε vs M")
-    e_range = [-0.8, -1.0, -1.27, -1.5, -1.8]
-    m_range = [1.0, 1.15, 1.25, 1.35, 1.5]
-    matrix = []
-    for e in e_range:
-        row = []
-        for m in m_range:
-            p_sens = {**params_base, "elasticidade": e, "mult_base": m}
-            df_s = run_reti_engine(p_sens)
-            # Evita divisão por zero
-            ren_sum = df_s["Renúncia"].sum()
-            roi = (df_s["Retorno"].sum() / ren_sum - 1) * 100 if ren_sum > 0 else 0
-            row.append(roi)
-        matrix.append(row)
-    
-    fig_h = go.Figure(data=go.Heatmap(z=matrix, x=m_range, y=e_range, colorscale='RdYlGn', text=matrix, texttemplate="%{text:.1f}%"))
-    fig_h.update_layout(template="plotly_dark", height=400, xaxis_title="Multiplicador M", yaxis_title="Elasticidade ε")
-    st.plotly_chart(fig_h, use_container_width=True)
+# ANÁLISE EXECUTIVA
+st.subheader("🧠 Análise de Cenário")
+if regime == "Simples Nacional (RETI-SME)" and i_pd < 0.15:
+    st.markdown(f"<div class='insight-box insight-red'><b>BLOQUEIO ITEM 6:</b> Intensidade de P&D abaixo de 15%. Firma inelegível ao Voucher no Simples.</div>", unsafe_allow_html=True)
 
-with tabs[2]:
-    st.subheader("Fontes de Custeio (Item 7)")
-    comp = {"Bets (GGR 12%→15%)": 850, "Reforma Administrativa": 600, "Corte Gastos Ineficientes": 450}
-    fig_c = go.Figure(go.Bar(x=list(comp.keys()), y=list(comp.values()), marker_color=CORES['gold'], text=[f"R$ {v}M" for v in comp.values()], textposition='auto'))
-    fig_c.add_hline(y=(total_ren/10)*1000, line_dash="dash", line_color=CORES['red'], annotation_text="Custo Médio Anual (R$ MM)")
-    fig_c.update_layout(template="plotly_dark", height=350, yaxis_title="R$ Milhões")
-    st.plotly_chart(fig_c, use_container_width=True)
+if df["Renúncia"].max() > t_lrf:
+    st.markdown(f"<div class='insight-box insight-red'><b>AJUSTE ITEM 7:</b> Teto LRF atingido. Multiplicador M reduzido para {df['M'].iloc[-1]:.2f} para garantir neutralidade.</div>", unsafe_allow_html=True)
+else:
+    st.markdown(f"<div class='insight-box insight-green'><b>CONFORMIDADE LRF:</b> O programa opera dentro do teto de R$ {t_lrf} Bi.</div>", unsafe_allow_html=True)
 
-with tabs[3]:
-    st.subheader("Memória de Cálculo Detalhada")
+with st.expander("🔍 Memória de Cálculo Detalhada"):
     st.dataframe(df.style.format(precision=3), use_container_width=True)
-
-# Cenários Estratégicos
-st.markdown("---")
-st.subheader("🎯 Cenários de Palatabilidade Fiscal")
-c_cons, c_mod, c_agres = st.columns(3)
-
-if c_cons.button("🟢 Conservador"):
-    st.session_state.m_val = 1.10
-    st.session_state.e_val = -0.9
-    st.rerun()
-
-if c_mod.button("🟡 Moderado"):
-    st.session_state.m_val = 1.25
-    st.session_state.e_val = -1.27
-    st.rerun()
-
-if c_agres.button("🟠 Agressivo"):
-    st.session_state.m_val = 1.40
-    st.session_state.e_val = -1.6
-    st.rerun()
-
-st.info("""
-**Nota Metodológica:** 
-1. **Adicionalidade:** Baseada em Kannebley (2016) com ε = -1,27. 
-2. **PTF:** Transmissão via resíduo de Solow com β calibrado entre 0,05 e 0,08. 
-3. **Neutralidade:** O sistema autoajustável (Item 7) garante que o teto LRF seja respeitado via compressão paramétrica automática.
-""")
