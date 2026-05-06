@@ -183,16 +183,38 @@ k1, k2, k3, k4 = st.columns(4)
 k1.metric("Custo Total (10a)", f"R$ {custo_total:.2f} Bi")
 k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
 k3.metric("Intensidade P&D", f"{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}")
-k4.metric("Risco Fiscal", "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO")
+k4.metric("Aderência ao Envelope Fiscal do RETI",
+          "NÃO ADERENTE" if df["Renúncia"].max() > params["teto_lrf"] else "ADERENTE")
 
-# 🔵 NOVO — explicação objetiva
-st.caption("Mecanismo: P&D adicional = ε × redução de custo (subsídio fiscal)")
+st.caption("""
+O indicador refere-se ao limite fiscal do programa RETI, não ao teto fiscal agregado da União.
+""")
+
+# 🔵 NOVO — explicação objetiva aprimorada
+st.caption("""
+Mecanismo de alavancagem:
+P&D adicional = elasticidade (ε) × redução de custo do P&D (subsídio fiscal).
+""")
 
 # GRÁFICOS
+st.subheader("Dinâmica Fiscal do Programa (R$ bilhões)")
+st.caption("""
+Comparação entre:
+- Renúncia fiscal anual (custo do programa)
+- Retorno fiscal estimado via produtividade e atividade econômica
+""")
+
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo"))
 fig.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno"))
 st.plotly_chart(fig, use_container_width=True)
+
+st.subheader("Resultado Fiscal Líquido Acumulado (R$ bilhões)")
+st.caption("""
+Saldo acumulado = retorno fiscal estimado – renúncia do programa.
+
+Indicador não representa payback direto, mas uma aproximação do impacto fiscal líquido ao longo do tempo.
+""")
 
 fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
@@ -239,15 +261,15 @@ else:
     st.warning("Baixa adicionalidade")
 
 if df["Renúncia"].max() > params["teto_lrf"]:
-    st.error("Pressão fiscal: excede teto da LRF")
+    st.error("Pressão fiscal: excede envelope do programa")
 else:
-    st.success("Sustentável fiscalmente")
+    st.success("Programa dentro do envelope fiscal")
 
 # LIMITAÇÕES (INALTERADO)
 st.subheader("Nota Metodológica")
 st.caption("Modelo estrutural baseado em parâmetros da literatura. Resultados devem ser interpretados como cenários, não previsões pontuais.")
 
-# TABELA (expandida, não reduzida)
+# TABELA
 with st.expander("Dados detalhados + variáveis do modelo"):
     st.markdown("""
 **Novas variáveis adicionadas para auditabilidade:**
