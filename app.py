@@ -17,10 +17,14 @@ SUCESSO = 0.70
 
 # FUNÇÕES
 def fator_porte(receita):
-    if receita <= 3.24: return 3.5
-    elif receita <= 78: return 2.5
-    elif receita <= 200: return 2.5 - 0.012 * (receita - 78)
-    else: return 1.0
+    if receita <= 3.24:
+        return 3.5
+    elif receita <= 78:
+        return 2.5
+    elif receita <= 200:
+        return 2.5 - 0.012 * (receita - 78)
+    else:
+        return 1.0
 
 def custo_relativo(incentivo):
     return incentivo / (1 + incentivo)
@@ -70,7 +74,7 @@ def simular_reti(params):
 
         firmas = difusao(params['n_firmas'], t)
 
-        # macro consistente
+        # MACRO CONSISTENTE
         ren_macro = (ren_unit * firmas) / 1000
         pd_macro = (pd_total * firmas) / 1000
 
@@ -167,11 +171,19 @@ pd_total_macro = df["P&D Macro"].sum()
 alavancagem = pd_total_macro / custo_total if custo_total > 0 else 0
 
 k1.metric("Custo Total (10a)", f"R$ {custo_total:.2f} Bi")
-k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
-k3.metric("Intensidade P&D", f"{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}")
-k4.metric("Risco Fiscal", "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO")
+st.caption("Renúncia fiscal acumulada no horizonte do programa")
 
-# GRÁFICOS (inalterados)
+k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
+st.caption("Quanto investimento privado é induzido por R$1 de gasto fiscal")
+
+k3.metric("Intensidade P&D", f"{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}")
+st.caption("Percentual da receita das firmas destinado a P&D ao final do período")
+
+risco = "ALTO" if df["Renúncia"].max() > params["teto_lrf"] else "CONTROLADO"
+k4.metric("Risco Fiscal", risco)
+st.caption("Avalia se o custo anual ultrapassa o limite definido pela LRF")
+
+# GRÁFICOS
 st.subheader("📊 Dinâmica Fiscal")
 
 fig = go.Figure()
@@ -185,37 +197,64 @@ fig2 = go.Figure()
 fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
 st.plotly_chart(fig2, use_container_width=True)
 
-# NOVO BLOCO — MACRO
+# MACRO (COM BASELINE)
 st.subheader("🌍 Impacto Macroeconômico")
 
 PIB = 10000
 g = 0.022
-pib_series = []
+baseline = 0.0117
 
+pib_series = []
 for _ in df["Ano"]:
     PIB *= (1 + g)
     pib_series.append(PIB)
 
 df["PIB"] = pib_series
-df["P&D/PIB"] = df["P&D Macro"] / df["PIB"]
+df["P&D/PIB_incremental"] = df["P&D Macro"] / df["PIB"]
+df["P&D/PIB_total"] = baseline + df["P&D/PIB_incremental"]
 
-st.metric("P&D / PIB (final)", f"{df['P&D/PIB'].iloc[-1]:.2%}")
+m1, m2, m3 = st.columns(3)
+m1.metric("P&D / PIB (Atual)", "1.17%")
+m2.metric("P&D / PIB (com RETI)", f"{df['P&D/PIB_total'].iloc[-1]:.2%}")
+m3.metric("Δ P&D / PIB", f"{df['P&D/PIB_incremental'].iloc[-1]:.2%}")
 
-# DIAGNÓSTICO (mantido)
+st.caption("O RETI atua como instrumento de elevação estrutural da intensidade tecnológica da economia")
+
+# DIAGNÓSTICO
 st.subheader("🧮 Diagnóstico do Regime")
 
 if alavancagem > 1.5:
-    st.success("Alta adicionalidade: forte indução de P&D privado")
+    st.success("Alta adicionalidade: forte resposta do investimento privado ao incentivo")
 elif alavancagem > 1.0:
     st.info("Adicionalidade moderada")
 else:
-    st.warning("Baixa adicionalidade")
+    st.warning("Baixa adicionalidade: resposta limitada do investimento privado")
 
 if df["Renúncia"].max() > params["teto_lrf"]:
-    st.error("Pressão fiscal: excede teto da LRF")
+    st.error("Pressão fiscal: custo anual ultrapassa o limite da LRF — requer ajuste paramétrico")
 else:
-    st.success("Sustentabilidade fiscal preservada")
+    st.success("Sustentabilidade fiscal preservada dentro dos limites definidos")
 
-# TABELA (inalterada)
+crescimento_pd = (df["P&D Total"].iloc[-1] / df["P&D Total"].iloc[0]) - 1
+st.info(f"Expansão do investimento em P&D ao longo do período: {crescimento_pd:.2%}")
+
+# INTERPRETAÇÃO
+st.subheader("🧠 Interpretação Econômica")
+
+st.markdown(f"""
+O RETI deve ser interpretado como um instrumento de política industrial voltado à indução de investimento privado em inovação.
+
+- Custo fiscal acumulado: **R$ {custo_total:.2f} Bi**  
+- Alavancagem de investimento: **{alavancagem:.2f}x**  
+- Intensidade tecnológica final: **{(df['P&D Total'].iloc[-1]/df['Receita'].iloc[-1]):.2%}**  
+- Intensidade de P&D na economia: **{df['P&D/PIB_total'].iloc[-1]:.2%} do PIB**
+
+**Leitura institucional:**
+- O regime desloca a economia para maior intensidade tecnológica  
+- O custo é controlado por mecanismos de governança fiscal  
+- O retorno ocorre no longo prazo via produtividade e crescimento potencial  
+""")
+
+# TABELA
 with st.expander("🔍 Dados detalhados"):
     st.dataframe(df)
