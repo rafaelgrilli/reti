@@ -649,7 +649,7 @@ with tab5:
         st.table(
             df_sens1.style
                 .format("R$ {:.1f}M")
-                .applymap(_style_macro)
+                .map(_style_macro)
         )
         st.caption(
             f"Teto do Envelope Fiscal: **R$ {teto_milhoes:.0f}M**. "
