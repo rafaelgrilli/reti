@@ -15,16 +15,25 @@ LAG_PTF = 3
 DEPREC = 0.15
 SUCESSO = 0.70
 
-# FUNÇÕES (INALTERADAS)
+# FUNÇÕES (INALTERADAS EXCETO fator_porte)
 def fator_porte(receita):
-    if receita <= 3.24:
-        return 3.5
-    elif receita <= 78:
-        return 2.5
-    elif receita <= 200:
-        return 2.5 - 0.012 * (receita - 78)
-    else:
-        return 1.0
+    """
+    Incentivo decrescente contínuo até zero no teto do lucro presumido.
+    Não há benefício marginal acima do limite estrutural.
+    """
+
+    teto_presumido = 78.0
+    fator_maximo = 3.5
+
+    if receita >= teto_presumido:
+        return 0.0
+
+    x = receita / teto_presumido
+
+    fator = fator_maximo * (1 - x**1.7)
+
+    return max(fator, 0.0)
+
 
 def custo_relativo(incentivo):
     return incentivo / (1 + incentivo)
@@ -167,7 +176,6 @@ params = {
     "potec": st.sidebar.slider("PoTec", 0.0, 0.5, 0.18)
 }
 
-# 🔵 MODO DEEP TECH (APENAS PARAMÉTRICO)
 if modo == "RETI Deep Tech":
     params["n_firmas"] = 900
     params["intensidade_pd"] = max(params["intensidade_pd"], 0.15)
@@ -177,102 +185,6 @@ if modo == "RETI Deep Tech":
     DEPREC = 0.11
     SUCESSO = 0.75
 
-# EXECUÇÃO
 hist = rodar_politica(params)
 df = hist[-1][2]
 cenarios = rodar_cenarios(params)
-
-# KPI
-st.title("RETI DSS — Avaliação Fiscal e Econômica")
-
-custo_total = df["Renúncia"].sum()
-pd_total_macro = df["P&D Macro"].sum()
-pd_extra_macro = df["PD Extra Macro"].sum()
-
-alavancagem = pd_total_macro / custo_total if custo_total > 0 else 0
-
-# 🔵 NOVOS KPIs
-eficiencia = df["Retorno"].sum() / custo_total if custo_total > 0 else 0
-custo_pd_extra = custo_total / pd_extra_macro if pd_extra_macro > 0 else 0
-
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Custo Total (10a)", f"R$ {custo_total:.2f} Bi")
-k2.metric("Alavancagem P&D", f"{alavancagem:.2f}x")
-k3.metric("Eficiência Fiscal (Retorno/Custo)", f"{eficiencia:.2f}")
-k4.metric("Custo por P&D Adicional", f"R$ {custo_pd_extra:.2f}")
-
-# 🔵 KPI envelope
-st.metric(
-    "Aderência ao Envelope Fiscal do RETI",
-    f"{df['Renúncia'].max():.2f} / {params['teto_lrf']:.2f}",
-    delta="OK" if df["Renúncia"].max() <= params["teto_lrf"] else "Acima"
-)
-
-# explicação
-st.caption("Mecanismo: P&D adicional = ε × redução de custo (subsídio fiscal)")
-
-# GRÁFICOS (COM TÍTULO)
-st.subheader("Custo Fiscal vs Retorno Econômico")
-
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=df["Ano"], y=df["Renúncia"], name="Custo Fiscal"))
-fig.add_trace(go.Scatter(x=df["Ano"], y=df["Retorno"], name="Retorno Econômico"))
-fig.update_layout(title="Fluxo anual de custo vs retorno do RETI")
-st.plotly_chart(fig, use_container_width=True)
-
-st.subheader("Resultado Fiscal Acumulado do Programa")
-
-fig2 = go.Figure()
-fig2.add_trace(go.Scatter(x=df["Ano"], y=df["Acumulado"], fill='tozeroy'))
-fig2.update_layout(title="Saldo acumulado (retorno - custo)")
-st.plotly_chart(fig2, use_container_width=True)
-
-# RESTANTE DO CÓDIGO INALTERADO ↓↓↓
-
-st.subheader("Impacto Macroeconômico")
-
-PIB = 10000
-g = 0.022
-baseline = 0.0117
-
-pib_series = []
-for _ in df["Ano"]:
-    PIB *= (1 + g)
-    pib_series.append(PIB)
-
-df["PIB"] = pib_series
-df["P&D/PIB_incremental"] = df["PD Extra Macro"] / df["PIB"]
-df["P&D/PIB_total"] = baseline + df["P&D/PIB_incremental"]
-
-m1, m2, m3 = st.columns(3)
-m1.metric("P&D / PIB (Atual)", "1.17%")
-m2.metric("P&D / PIB (com RETI)", f"{df['P&D/PIB_total'].iloc[-1]:.2%}")
-m3.metric("Δ P&D / PIB", f"{df['P&D/PIB_incremental'].iloc[-1]:.2%}")
-
-st.subheader("Intervalo de Resultados")
-
-custos = [c["Renúncia"].sum() for c in cenarios.values()]
-c1, c2 = st.columns(2)
-
-c1.metric("Custo Médio", f"R$ {np.mean(custos):.2f} Bi",
-          delta=f"{min(custos):.2f} – {max(custos):.2f}")
-
-st.subheader("Diagnóstico")
-
-if alavancagem > 1.5:
-    st.success("Alta adicionalidade")
-elif alavancagem > 1.0:
-    st.info("Adicionalidade moderada")
-else:
-    st.warning("Baixa adicionalidade")
-
-if df["Renúncia"].max() > params["teto_lrf"]:
-    st.error("Pressão sobre o envelope fiscal do programa")
-else:
-    st.success("Dentro do envelope fiscal do programa")
-
-st.subheader("Nota Metodológica")
-st.caption("Modelo estrutural baseado em parâmetros da literatura. Resultados devem ser interpretados como cenários, não previsões pontuais.")
-
-with st.expander("Dados detalhados + variáveis do modelo"):
-    st.dataframe(df)
