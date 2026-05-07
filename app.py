@@ -736,7 +736,7 @@ with tab5:
         st.table(
             df_sens2.style
                 .format("R$ {:.1f}k")
-                .applymap(_style_micro)
+                .map(_style_micro)
         )
         st.caption(
             "Economia tributária estimada (R$ mil). Verde escuro = maior alívio de caixa. "
