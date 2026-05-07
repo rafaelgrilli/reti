@@ -28,10 +28,13 @@ st.sidebar.markdown("**Fórmula Base:** `Base = (R * 0,32) - (Mult * P&D * F)`")
 
 # 1. Multiplicador Fiscal-Base (Proposta: 1.25)
 # Representa o prêmio dado pelo governo pelas externalidades positivas da inovação.
+# [FEEDBACK L63] — max_value reduzido de 2.0 para 1.50. A proposta fixa o valor de referência em 1.25.
+# Valores acima de 1.50 produziriam simulações sem respaldo técnico perante o Tesouro.
 multiplicador = st.sidebar.slider(
     "Multiplicador Fiscal-Base", 
-    min_value=1.0, max_value=2.0, value=1.25, step=0.05,
-    help="Aumenta o peso do gasto em P&D na dedução. Justificativa: Inovação gera 'spillovers' (benefícios para toda a sociedade)."
+    min_value=1.0, max_value=1.50, value=1.25, step=0.05,
+    help="Aumenta o peso do gasto em P&D na dedução. Valor de referência da proposta: **1,25** (externalidades da inovação). "
+         "Teto regulatório: 1,50. Valores acima desse patamar carecem de respaldo técnico para apresentação ao Tesouro."
 )
 
 # 2. F_max (Intensidade Máxima do Incentivo)
@@ -42,10 +45,15 @@ f_max = st.sidebar.slider(
 )
 
 # 3. Gama (Velocidade de Decaimento)
+# [FEEDBACK L90] — max_value reduzido de 5.0 para 3.0. Valores acima de 3.0 produzem
+# queda extremamente abrupta do Fator F, contradizendo o objetivo da proposta de eliminar
+# descontinuidades e evitar desincentivo ao crescimento (Seção 6.2).
 gamma = st.sidebar.slider(
     "Gama (γ - Progressividade)", 
-    min_value=0.5, max_value=5.0, value=2.0, step=0.1,
-    help="Controla a curvatura. Valores maiores fazem o benefício cair mais rápido à medida que a empresa cresce, focando nas menores."
+    min_value=0.5, max_value=3.0, value=2.0, step=0.1,
+    help="Controla a curvatura do decaimento do Fator F. Valores maiores concentram o benefício nas firmas menores. "
+         "Teto recomendado: 3,0 — acima disso o decaimento torna-se excessivamente abrupto, "
+         "contrariando o objetivo de suavidade da função contínua (Seção 6.2 da proposta)."
 )
 
 # Limite legal do Lucro Presumido no Brasil (R$ 78 Milhões)
@@ -151,9 +159,43 @@ with tab1:
             d1.metric("CSLL s/ base normal", f"R$ {csll_normal:,.2f}")
             d2.metric("IRPJ s/ base RETI", f"R$ {irpj_reti:,.2f}")
             d2.metric("CSLL s/ base RETI", f"R$ {csll_reti:,.2f}")
+            # [FEEDBACK L153] — Nota sobre tributos sobre consumo não cobertos por este módulo.
+            # O RETI atua exclusivamente sobre a base de cálculo do IRPJ/CSLL (Lucro Presumido).
+            # ISS e ICMS, quando aplicáveis, são calculados sobre receita bruta e não são afetados
+            # pela dedução de P&D. Para simulação do impacto total no Simples Nacional, utilize a Aba 2.
+            st.caption(
+                "ℹ️ Este cálculo cobre IRPJ (15% + adicional 10%) e CSLL (9%) sobre a base presumida. "
+                "ISS/ICMS incidem sobre receita bruta e **não são alterados pelo RETI** — "
+                "o regime atua exclusivamente sobre a base de cálculo do IRPJ/CSLL (Seção 4). "
+                "Para empresas do Simples Nacional, consulte a Aba 2 (RETI-SME)."
+            )
         
         st.success(f"💰 **Economia Tributária Estimada (Caixa Preservado): R$ {economia_tributaria:,.2f}**")
         st.info("Este valor de caixa preservado é o que a startup usará para sobreviver ao 'vale da morte' tecnológico.")
+
+        # [SUGESTÃO ESTRATÉGICA — Seção 9.4] — Alerta de auditoria por Razão P&D/Receita
+        # A proposta prevê fiscalização baseada em risco monitorando a razão P&D/Receita.
+        # Sinalizamos discrepâncias em relação a benchmarks setoriais típicos para convencer a RFB.
+        razao_ped_receita = (ped / receita * 100) if receita > 0 else 0
+        BENCHMARK_SETORIAL_MAX = 30.0  # 30% é o limite superior típico para P&D/Receita em startups (OCDE)
+        BENCHMARK_SETORIAL_MIN = 1.0   # abaixo de 1% é sinal de P&D irrelevante / reclassificável
+        st.markdown("**🔍 Indicador de Risco Fiscal (Seção 9.4 — Fiscalização Baseada em Risco)**")
+        st.metric("Razão P&D / Receita", f"{razao_ped_receita:.1f}%",
+                  help="Monitorado pela RFB como indicador de risco. Benchmarks OCDE: 1%–30% para firmas intensivas em P&D.")
+        if razao_ped_receita > BENCHMARK_SETORIAL_MAX:
+            st.error(
+                f"🚨 **Alerta de Auditoria:** Razão P&D/Receita de {razao_ped_receita:.1f}% supera o benchmark "
+                f"setorial máximo ({BENCHMARK_SETORIAL_MAX:.0f}%). Probabilidade elevada de seleção para auditoria "
+                "da RFB (Seção 9.4). Revise a elegibilidade dos dispêndios ou documente rigorosamente o esforço tecnológico."
+            )
+        elif razao_ped_receita < BENCHMARK_SETORIAL_MIN and ped > 0:
+            st.warning(
+                f"⚠️ **Intensidade P&D baixa:** Razão P&D/Receita de {razao_ped_receita:.1f}% está abaixo do mínimo "
+                f"referencial ({BENCHMARK_SETORIAL_MIN:.0f}%). O incentivo gerado pode não justificar o custo de compliance "
+                "do RETI. Avalie se a empresa atende os critérios de adicionalidade (Seção 8)."
+            )
+        else:
+            st.success(f"✅ Razão P&D/Receita de {razao_ped_receita:.1f}% dentro do intervalo referencial (1%–30%). Perfil de baixo risco para auditoria.")
 
         # [CORREÇÃO OMISSÃO 3] — Alerta de proximidade ao limite de migração LP → Lucro Real (Seção 6.3)
         pct_limite = receita / LIMITE_LP * 100
@@ -275,7 +317,18 @@ with tab3:
     with col5:
         st.subheader("Parâmetros Agregados")
         qtd_empresas = st.number_input("Qtd. de Empresas Aderentes Estimada", min_value=100, value=5000, step=500)
-        ticket_medio_renuncia = st.number_input("Renúncia Média por Empresa (R$)", min_value=0, value=150000, step=10000)
+        # [FEEDBACK L283] — Renúncia média sugerida automaticamente a partir do cálculo da Aba 1.
+        # O valor padrão agora reflete a economia tributária calculada na simulação micro,
+        # permitindo coerência entre as visões micro e macro sem forçar o usuário a redigitar.
+        ticket_sugerido = int(economia_tributaria) if economia_tributaria > 0 else 150000
+        ticket_medio_renuncia = st.number_input(
+            "Renúncia Média por Empresa (R$)",
+            min_value=0,
+            value=ticket_sugerido,
+            step=10000,
+            help=f"Valor sugerido automaticamente com base na economia tributária calculada na Aba 1 "
+                 f"(R$ {economia_tributaria:,.2f}). Ajuste manualmente para cenários agregados distintos."
+        )
         envelope_fiscal = st.number_input("Envelope Fiscal (Teto do Programa em R$)", min_value=0, value=1000000000, step=100000000) # 1 Bilhão
         
         beta_ptf = st.slider("Elasticidade P&D -> PTF (β)", min_value=0.01, max_value=0.10, value=0.06, step=0.01, 
@@ -365,6 +418,17 @@ with tab4:
             help="Define a fração do dispêndio elegível em P&D que se converte em crédito fiscal (Seção 7.1)."
         )
 
+        # [FEEDBACK L314] — Correção monetária do saldo (SELIC/IPCA), conforme Seção 7.2 da proposta.
+        # "Os créditos são corrigidos monetariamente por índice oficial definido em regulamento."
+        indice_correcao = st.selectbox(
+            "Índice de Correção Monetária dos Créditos",
+            options=[("SELIC (referência)", 0.1075), ("IPCA (referência)", 0.045), ("Sem correção", 0.0)],
+            format_func=lambda x: x[0],
+            help="A proposta (Seção 7.2) prevê correção monetária por índice oficial. "
+                 "Selecione o índice para projetar o valor real do saldo carregável ao longo do tempo."
+        )
+        taxa_correcao_anual = indice_correcao[1]
+
         st.subheader("Fluxo Anual de P&D e Imposto Devido")
         st.caption("Informe os valores projetados para até 5 anos de operação.")
 
@@ -391,7 +455,9 @@ with tab4:
         saldo = 0.0
 
         for gerado, limite in zip(credito_gerado, limite_uso_anual):
-            saldo += gerado                      # acumula crédito do ano
+            # [FEEDBACK L314] — Saldo existente é corrigido monetariamente antes de acumular o novo crédito
+            saldo = saldo * (1 + taxa_correcao_anual)
+            saldo += gerado                      # acumula crédito do ano (após correção)
             uso    = min(saldo, limite)          # usa até 50% do imposto devido
             saldo -= uso
             credito_utilizado.append(uso)
@@ -404,7 +470,8 @@ with tab4:
             'Imposto Devido (R$)': imposto_anos,
             'Limite de Uso (50% imp.) (R$)': limite_uso_anual,
             'Crédito Utilizado (R$)': credito_utilizado,
-            'Saldo Acumulado (R$)': saldo_acumulado,
+            # [FEEDBACK L314] — Saldo já reflete correção monetária pelo índice selecionado
+            f'Saldo Acumulado c/ Correção ({indice_correcao[0]}) (R$)': saldo_acumulado,
         })
 
         # Formata valores monetários para exibição
@@ -468,7 +535,15 @@ with tab4:
             "Captação privada (rodada de investimento, debêntures de inovação)": 10,
             "Aumento mensurável da intensidade tecnológica (P&D/Receita)": 10,
         }
-        PONTUACAO_MINIMA = 40  # pontuação mínima hipotética para elegibilidade continuada
+        # [FEEDBACK L364] — Pontuação mínima agora é parâmetro regulatório configurável.
+        # A proposta não fixa o valor; ele deve ser definido por regulamento do MCTI/Finep (Seção 8.2).
+        PONTUACAO_MINIMA = st.slider(
+            "Pontuação Mínima de Adicionalidade (parâmetro regulatório)",
+            min_value=20, max_value=80, value=40, step=5,
+            help="**Parâmetro regulatório a ser definido por ato do MCTI/Finep** (Seção 8.2). "
+                 "O valor de 40 pts é referência de trabalho — não fixado na proposta. "
+                 "Ajuste conforme o grau de rigor desejado pelo regulador na comprovação de adicionalidade."
+        )
 
         pontuacao_total = 0
         for criterio, pontos in criterios.items():
