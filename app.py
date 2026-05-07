@@ -64,11 +64,12 @@ LIMITE_LP = 78000000
 # =============================================================================
 # Dividimos o app em 4 visões para facilitar a análise.
 # [CORREÇÃO OMISSÃO 1] — Adicionada Aba 4: Créditos Fiscais Carregáveis (Seção 7 da proposta)
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏢 Visão Micro: Lucro Presumido", 
     "🏪 Visão Micro: Simples Nacional (SME)", 
     "📊 Visão Macro: Impacto Fiscal e PTF",
-    "🗂️ Créditos Fiscais Carregáveis (Carryforward)"
+    "🗂️ Créditos Fiscais Carregáveis (Carryforward)",
+    "🎯 Matriz de Estresse e Sensibilidade"
 ])
 
 # =============================================================================
@@ -563,6 +564,195 @@ with tab4:
                 f"Mínimo exigido após 36 meses: {PONTUACAO_MINIMA} pts. "
                 "A utilização dos créditos acumulados pode ser suspensa até comprovação de adicionalidade (Seção 8)."
             )
+
+# =============================================================================
+# ABA 5: MATRIZ DE ESTRESSE E SENSIBILIDADE
+# =============================================================================
+# Implementada conforme feedback técnico: duas matrizes de sensibilidade para
+# suporte à tomada de decisão da SPE/Fazenda e sinalização de rigor regulatório.
+with tab5:
+    st.header("🎯 Matriz de Estresse e Sensibilidade")
+    st.markdown("""
+    Ferramenta de Análise de Impacto Regulatório (AIR). Enquanto a Aba 3 mostra um cenário pontual,
+    esta aba mapeia o **espaço completo de risco** — respondendo à pergunta central do Tesouro:
+    *"Em que combinação de parâmetros o programa sai do controle?"*
+    """)
+
+    # -------------------------------------------------------------------------
+    # SENSIBILIDADE 1: CUSTO FISCAL AGREGADO (MACRO)
+    # Cruza Quantidade de Empresas × Ticket Médio de Renúncia
+    # -------------------------------------------------------------------------
+    st.subheader("📊 Sensibilidade 1 — Custo Fiscal Agregado: Empresas × Renúncia Média")
+    st.markdown("""
+    Células **vermelhas** indicam rompimento do Envelope Fiscal (teto definido na Aba 3).  
+    Células **verdes** indicam espaço fiscal preservado.  
+    Referência: parâmetros atualmente configurados na Aba 3 estão marcados com ★.
+    """)
+
+    col_s1a, col_s1b = st.columns([1, 3])
+
+    with col_s1a:
+        st.caption("Eixos da Matriz 1")
+        # Eixos customizáveis — valores padrão centrados nos parâmetros da Aba 3
+        eixo_empresas_input = st.text_input(
+            "Qtd. de Empresas (5 valores, separados por vírgula)",
+            value="1000, 3000, 5000, 7000, 10000",
+            help="Defina os cenários de adesão a testar. Separe com vírgulas."
+        )
+        eixo_renuncia_input = st.text_input(
+            "Renúncia Média por Empresa — R$ (5 valores, separados por vírgula)",
+            value="50000, 100000, 150000, 200000, 250000",
+            help="Defina os cenários de ticket médio a testar. Separe com vírgulas."
+        )
+        teto_milhoes = envelope_fiscal / 1e6
+
+        try:
+            eixo_empresas_s1 = [int(x.strip()) for x in eixo_empresas_input.split(",")]
+            eixo_renuncia_s1 = [int(x.strip()) for x in eixo_renuncia_input.split(",")]
+        except ValueError:
+            st.error("❌ Formato inválido. Use apenas números inteiros separados por vírgula.")
+            eixo_empresas_s1 = [1000, 3000, 5000, 7000, 10000]
+            eixo_renuncia_s1 = [50000, 100000, 150000, 200000, 250000]
+
+    with col_s1b:
+        # Monta a matriz de custo total (em R$ milhões)
+        matriz_custo = []
+        for qtd in eixo_empresas_s1:
+            linha = []
+            for ticket in eixo_renuncia_s1:
+                custo_m = (qtd * ticket) / 1e6
+                linha.append(custo_m)
+            matriz_custo.append(linha)
+
+        # Rótulos dos eixos: marca com ★ a célula mais próxima dos parâmetros atuais da Aba 3
+        def _rotulo(val, atual, unidade=""):
+            marcador = " ★" if val == min(eixo_empresas_s1 + eixo_renuncia_s1,
+                                          key=lambda v: abs(v - atual)) else ""
+            return f"{val:,}{unidade}{marcador}"
+
+        idx_labels  = [f"{q:,} emp." + (" ★" if abs(q - qtd_empresas) == min(abs(e - qtd_empresas) for e in eixo_empresas_s1) else "")
+                       for q in eixo_empresas_s1]
+        col_labels  = [f"R$ {t/1000:.0f}k" + (" ★" if abs(t - ticket_medio_renuncia) == min(abs(r - ticket_medio_renuncia) for r in eixo_renuncia_s1) else "")
+                       for t in eixo_renuncia_s1]
+
+        df_sens1 = pd.DataFrame(matriz_custo, index=idx_labels, columns=col_labels)
+
+        # Estilização: vermelho escuro se rompe teto, gradiente verde-amarelo-vermelho
+        def _style_macro(val):
+            if val > teto_milhoes:
+                return "color: white; background-color: #8B0000; font-weight: bold"
+            ratio = val / teto_milhoes if teto_milhoes > 0 else 0
+            if ratio > 0.85:
+                return "background-color: #FFA500; color: black"   # laranja: zona de atenção
+            return "background-color: #2E7D32; color: white"       # verde: seguro
+
+        st.table(
+            df_sens1.style
+                .format("R$ {:.1f}M")
+                .applymap(_style_macro)
+        )
+        st.caption(
+            f"Teto do Envelope Fiscal: **R$ {teto_milhoes:.0f}M**. "
+            f"Células vermelhas = rompimento. Laranja = zona de atenção (>85% do teto). Verde = seguro. "
+            f"★ = valor mais próximo dos parâmetros configurados na Aba 3."
+        )
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # SENSIBILIDADE 2: ECONOMIA DA FIRMA (MICRO)
+    # Cruza Receita Bruta × Gasto em P&D — demonstra progressividade do Fator F
+    # -------------------------------------------------------------------------
+    st.subheader("📊 Sensibilidade 2 — Economia da Firma: Receita × Intensidade de P&D")
+    st.markdown("""
+    Demonstra a **progressividade do Fator F** para o decisor público.  
+    Células mais escuras = maior economia tributária. O gradiente evidencia que empresas menores
+    e com maior intensidade de P&D capturam o maior benefício — exatamente o objetivo da Seção 6.1.  
+    Referência: parâmetros atuais da Aba 1 marcados com ★.
+    """)
+
+    col_s2a, col_s2b = st.columns([1, 3])
+
+    with col_s2a:
+        st.caption("Eixos da Matriz 2")
+        eixo_receita_input = st.text_input(
+            "Receita Bruta (5 valores em R$, separados por vírgula)",
+            value="2000000, 10000000, 25000000, 50000000, 75000000",
+            help="Valores em R$. Ex: 2000000 = R$ 2M."
+        )
+        eixo_ped_input = st.text_input(
+            "Gasto em P&D (5 valores em R$, separados por vírgula)",
+            value="200000, 500000, 1000000, 2000000, 4000000",
+            help="Valores em R$."
+        )
+
+        try:
+            eixo_receita_s2 = [int(x.strip()) for x in eixo_receita_input.split(",")]
+            eixo_ped_s2     = [int(x.strip()) for x in eixo_ped_input.split(",")]
+        except ValueError:
+            st.error("❌ Formato inválido. Use apenas números inteiros separados por vírgula.")
+            eixo_receita_s2 = [2000000, 10000000, 25000000, 50000000, 75000000]
+            eixo_ped_s2     = [200000, 500000, 1000000, 2000000, 4000000]
+
+    with col_s2b:
+        # Monta a matriz de economia tributária usando os parâmetros globais da sidebar
+        matriz_micro = []
+        for rec in eixo_receita_s2:
+            linha = []
+            for p in eixo_ped_s2:
+                # Fator F com parâmetros da sidebar (f_max, gamma já calculados acima)
+                f_cell       = max(0.0, f_max * (1 - (rec / LIMITE_LP) ** gamma))
+                base_n       = rec * coef_presuncao
+                ded          = multiplicador * p * f_cell
+                base_aj      = max(0.0, base_n - ded)
+                irpj_n       = base_n  * 0.15 + max(0, base_n  - 240000) * 0.10
+                irpj_aj      = base_aj * 0.15 + max(0, base_aj - 240000) * 0.10
+                economia_cel = (irpj_n + base_n  * 0.09) - (irpj_aj + base_aj * 0.09)
+                linha.append(max(0.0, economia_cel) / 1e3)   # em R$ mil
+            matriz_micro.append(linha)
+
+        idx_labels_m2 = [f"R$ {r/1e6:.1f}M" + (" ★" if abs(r - receita) == min(abs(rv - receita) for rv in eixo_receita_s2) else "")
+                         for r in eixo_receita_s2]
+        col_labels_m2 = [f"P&D R$ {p/1e3:.0f}k" + (" ★" if abs(p - ped) == min(abs(pv - ped) for pv in eixo_ped_s2) else "")
+                         for p in eixo_ped_s2]
+
+        df_sens2 = pd.DataFrame(matriz_micro, index=idx_labels_m2, columns=col_labels_m2)
+
+        # Maior economia = verde escuro; menor = amarelo claro
+        max_val = df_sens2.values.max() if df_sens2.values.max() > 0 else 1
+
+        def _style_micro(val):
+            ratio = val / max_val
+            if ratio > 0.75:
+                return "background-color: #1B5E20; color: white; font-weight: bold"   # verde escuro
+            elif ratio > 0.50:
+                return "background-color: #388E3C; color: white"
+            elif ratio > 0.25:
+                return "background-color: #81C784; color: black"
+            elif ratio > 0.05:
+                return "background-color: #C8E6C9; color: black"
+            return "background-color: #F5F5F5; color: #9E9E9E"                        # cinza: benefício irrisório
+
+        st.table(
+            df_sens2.style
+                .format("R$ {:.1f}k")
+                .applymap(_style_micro)
+        )
+        st.caption(
+            "Economia tributária estimada (R$ mil). Verde escuro = maior alívio de caixa. "
+            "Cinza = benefício irrisório (geralmente grandes empresas com baixa intensidade de P&D). "
+            "A progressividade do Fator F é visível na diagonal: quanto menor a receita e maior o P&D, maior o benefício. "
+            f"★ = parâmetros atuais da Aba 1 (Receita: R$ {receita/1e6:.1f}M | P&D: R$ {ped/1e3:.0f}k). "
+            "Usa coeficiente de presunção e multiplicador configurados na sidebar."
+        )
+
+    st.markdown("---")
+    st.info(
+        "💡 **Como usar esta aba na apresentação à SPE/Fazenda:** "
+        "(1) Mostre a Matriz 1 para definir os gatilhos de ajuste do Fator F (Seção 12.2). "
+        "(2) Mostre a Matriz 2 para justificar a progressividade e a focalização nas firmas menores (Seção 6.1). "
+        "(3) Use o ★ para ancorar o cenário-base — e as células coloridas para mostrar que o programa tem limites claros."
+    )
 
 st.markdown("---")
 st.markdown("<p style='text-align: center; color: gray;'>Simulador desenvolvido para análise de impacto regulatório - Ministério da Fazenda / SPE</p>", unsafe_allow_html=True)
